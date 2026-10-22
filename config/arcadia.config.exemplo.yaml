@@ -1,0 +1,109 @@
+# Exemplo de configuração do Arcadia. Nomes e pastas aqui são genéricos: o repositório é público.
+# A configuração real fica fora do repositório, em %USERPROFILE%\.arcadia\arcadia.config.yaml.
+# Caminhos aceitam ~ (pasta do usuário) e barras normais. No Windows, a comparação ignora maiúsculas.
+versao: 1
+
+servidor:
+  # Ingestão de hooks, saúde e doctor: só na própria máquina.
+  ingestao:
+    host: 127.0.0.1
+    porta: 47800
+  # Navegador do PC e do celular: só dados saneados, com pareamento.
+  visualizacao:
+    host: 0.0.0.0
+    porta: 4780
+  pareamento:
+    validadeCodigoMinutos: 5
+  dados: "%LOCALAPPDATA%/Arcadia/dados"
+  retencaoDias: 180
+
+fontes:
+  openmausbot:
+    ligado: true
+    portas: [8799, 18799, 28799]   # a primeira que responder ao /.well-known/openmausbot/environment
+    # As rotas permitidas ficam fixas no código (só GET e o SSE com screens=off).
+    # Bots com pasta privada de tarefa vão para a sala do QG da equipe:
+    qgPorEquipe:
+      "Equipe exemplo": "~/projetos/estudio-exemplo"
+  claudeTranscricoes:
+    ligado: true
+    pasta: "~/.claude/projects"
+    catchUpHoras: 24
+  claudeSessoesVivas:
+    ligado: true
+    pasta: "~/.claude/sessions"   # só os .json; os .key nunca são abertos
+  codexRollouts:
+    ligado: true
+    pasta: "~/.codex/sessions"
+  claudeHooks:
+    ligado: false   # Fase 6, só com o ok do dono da máquina
+  codexHooks:
+    ligado: false   # Fase 6, só com o ok do dono da máquina
+  git:
+    ligado: false   # Fase 5: entregas por git log -1, só leitura
+  otel:
+    ligado: false   # opcional: custo e tokens agregados
+
+privacidade:
+  mostrarNomeCurtoDoArquivo: false   # cartões mostram só a categoria da ferramenta
+  mostrarTituloDaTarefa: true        # título saneado (regex de segredos antes de sair)
+
+mundo:
+  fuso: America/Sao_Paulo
+  fps:
+    pc: 60
+    celular: 30
+  qualidade:
+    pc: alto
+    celular: medio   # baixo, medio ou alto; ?q= força na URL
+  ocio:
+    pausaMinutos: 3
+    dormeMinutos: 20
+
+# Alas são as frentes de trabalho. A ordem define a posição no andar e nunca muda depois de criada.
+# Sala = raiz git da pasta de trabalho; sem git, a regra de pasta agregadora ou a própria pasta.
+alas:
+  - id: estudio
+    nome: Estúdio
+    cor: "#ffb347"
+    regras: ["~/projetos/estudio-*/**", "~/videos/**"]
+  - id: produtos
+    nome: Produtos
+    cor: "#c9a7ff"
+    regras: ["~/projetos/produto-*/**"]
+  - id: trabalho
+    nome: Trabalho
+    cor: "#a9b3d6"
+    regras: ["~/empresa/**"]
+  - id: estudos
+    nome: Estudos
+    cor: "#3fd28b"
+    regras: ["~/estudos/**"]
+  - id: cockpit
+    nome: Cockpit
+    cor: "#f2b45a"
+    regras: ["~/projetos"]   # sessões abertas na raiz da pasta agregadora
+  - id: bastidores
+    nome: Bastidores
+    cor: "#6fd3ff"
+    regras: ["~", "%TEMP%/**"]
+
+# Sem regra, a sala espera na Recepção até ser classificada aqui.
+recepcao:
+  id: recepcao
+  nome: Recepção
+  cor: "#ffe08a"
+
+salas:
+  # Cada subpasta de primeiro nível destas pastas vira uma sala (quando não há raiz git).
+  pastasAgregadoras: ["~/projetos", "~/videos"]
+  # Nunca viram sala e nunca são lidas.
+  excluir: ["**/senhas/**", "**/*segredo*/**", "**/*recovery*"]
+  # Apelido mostrado no mundo no lugar do nome da pasta.
+  apelidos:
+    "~/projetos/produto-alfa": Alfa
+
+personagens:
+  # Personagens pessoais (aparência e sprites) ficam num pacote local, fora do Git.
+  pacoteLocal: "%USERPROFILE%/.arcadia/personagens"
+  humanos: []   # o repositório traz só personagens genéricos
