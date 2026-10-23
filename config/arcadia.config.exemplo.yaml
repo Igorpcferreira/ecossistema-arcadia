@@ -8,9 +8,10 @@ servidor:
   ingestao:
     host: 127.0.0.1
     porta: 47800
-  # Navegador do PC e do celular: só dados saneados, com pareamento.
+  # Navegador do PC e do celular: só dados saneados. Fica em 127.0.0.1 até existir o pareamento
+  # (Fase 4) e a rede de casa estar liberada (scripts/rede-local.ps1); antes disso, 0.0.0.0 só gera aviso.
   visualizacao:
-    host: 0.0.0.0
+    host: 127.0.0.1
     porta: 4780
   pareamento:
     validadeCodigoMinutos: 5
@@ -62,10 +63,13 @@ mundo:
 
 # Alas são as frentes de trabalho. A ordem define a posição no andar e nunca muda depois de criada.
 # Sala = raiz git da pasta de trabalho; sem git, a regra de pasta agregadora ou a própria pasta.
+# Cada ala aceita um `tipo` opcional (web, app, video, backend, pesquisa ou outro): é o modelo de mobília
+# das salas novas dessa ala.
 alas:
   - id: estudio
     nome: Estúdio
     cor: "#ffb347"
+    tipo: video
     regras: ["~/projetos/estudio-*/**", "~/videos/**"]
   - id: produtos
     nome: Produtos
@@ -95,9 +99,30 @@ recepcao:
   cor: "#ffe08a"
 
 salas:
+  # Quem decide a sala do agente: o cwd da sessão quando ela aparece (ou quando o cwd muda de sala) e o arquivo que
+  # uma ferramenta grava numa sala de projeto (raiz git, subpasta de pasta agregadora ou pasta com apelido). Leitura
+  # e busca em outro projeto só levam o agente depois de três seguidas na mesma sala. Evento sem caminho deixa o
+  # agente onde está, e pasta comum sem git vira sala só pelo cwd.
   # Cada subpasta de primeiro nível destas pastas vira uma sala (quando não há raiz git).
+  # O .git só é procurado dentro de raízes conhecidas (casa, regras das alas, agregadoras e apelidos).
+  # Fora delas o disco não é consultado: a sessão aberta numa pasta de lá ganha a sala da própria pasta, e
+  # arquivo mexido lá não cria sala (o agente fica na sala em que está). Se o doctor contar salas que nasceram
+  # fora das raízes conhecidas, crie uma regra de ala ou uma pasta agregadora que cubra essas pastas.
+  # Disco lento: cada consulta tem prazo de 2 s; sem resposta, o caminho fica sem sala por enquanto (nunca
+  # vira a sala errada) e a raiz que demorou fica alguns minutos sem consulta.
+  # As pastas dos próprios agentes (~/.claude, ~/.codex, ~/.openmausbot) e os dados do Arcadia viram
+  # salas de nome fixo na ala que casa com ~; caminho de rede ou do WSL vira a sala fixa "Pasta de rede".
   pastasAgregadoras: ["~/projetos", "~/videos"]
-  # Nunca viram sala e nunca são lidas.
+  # Pastas de apoio (só o nome): na raiz de uma pasta agregadora, a subpasta com um destes nomes não vira sala; ela
+  # conta para a sala da própria agregadora, e arquivo dela não leva o agente para lá.
+  pastasDeApoio: [docs, doc, tmp, temp, scripts, assets, public, static, dist, build, out, logs, data, test, tests, tools, .github, .vscode, .cache, node_modules]
+  # Pastas de rascunho: arquivo mexido ali nunca cria sala nem move o agente. Sessão aberta ali (cwd) continua
+  # ganhando sala pela regra de sempre.
+  rascunho: ["%TEMP%"]
+  # Nunca viram sala e nunca são lidas; cada padrão vale também para as subpastas. A sessão que mexe numa
+  # pasta excluída (ou cujo subagente mexe) aparece sem nome, tarefa e nome de arquivo dali em diante, também
+  # depois de reiniciar. O bot fica sem tarefa e sem nome de arquivo só até o próximo turno (o nome dele fica),
+  # e o turno de quem delegou a tarefa a ele também.
   excluir: ["**/senhas/**", "**/*segredo*/**", "**/*recovery*"]
   # Apelido mostrado no mundo no lugar do nome da pasta.
   apelidos:

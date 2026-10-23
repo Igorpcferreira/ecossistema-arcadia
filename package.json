@@ -1,0 +1,30 @@
+{
+  "name": "ecossistema-arcadia",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Mundo em pixel art para assistir agentes de IA trabalhando, só para ver.",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "engines": {
+    "node": ">=24.5"
+  },
+  "scripts": {
+    "dev:mundo": "vite --config apps/world/vite.config.ts apps/world",
+    "build:mundo": "vite build --config apps/world/vite.config.ts apps/world",
+    "dev:servidor": "node --watch apps/server/src/main.ts",
+    "servidor": "node apps/server/src/main.ts",
+    "test": "node --test \"packages/shared/src/**/*.test.ts\" \"apps/server/src/**/*.test.ts\"",
+    "typecheck": "tsc -p packages/shared/tsconfig.json && tsc -p apps/server/tsconfig.json && tsc -p apps/world/tsconfig.json",
+    "checar:escrita": "node tools/checar-escrita.mjs",
+    "doctor": "node apps/server/src/doctor.ts",
+    "simular": "node apps/server/src/main.ts --simulador dia-normal"
+  },
+  "devDependencies": {
+    "@types/node": "24.19.1",
+    "typescript": "7.0.2"
+  },
+  "//": "Os scripts não chamam npm por dentro: nesta máquina, um npm 6 antigo fora do projeto entraria no lugar."
+}

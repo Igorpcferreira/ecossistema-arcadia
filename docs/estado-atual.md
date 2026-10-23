@@ -1,10 +1,25 @@
 # Estado atual
 
-Atualizado em 22/10/2026, no fim da Fase 0.
+Atualizado em 23/10/2026, no portão G1.
 
 ## Em uma frase
 
-A Fase 0 (preparação e verificação, sem código de produto) está feita: continuidade criada, máquina verificada só lendo, OpenMausBot sondado, motor 2D escolhido com uma prova de fps. O commit e o push da Fase 0 foram autorizados pelo Igor em 22/10/2026; o portão G0 espera só as respostas às perguntas da Fase 0. Nenhum hook, configuração, firewall ou rede foi alterado.
+A Fase 0 está feita e publicada (`16c152a`) e as perguntas do portão G0 foram respondidas no mesmo dia, inclusive a da rede (Wi-Fi de casa Privada, com os comandos prontos para o Igor rodar). As Fases 1 e 2 correm em paralelo, cada uma com um agente: a Fase 1 passou pelo portão G1 em 23/10/2026 (o Igor aceitou todas as recomendações) e está aplicando as escolhas como padrão; a Fase 2 tem os marcos 1 a 5 prontos e espera um caso real de delegação do OpenMausBot para fechar o G2. Nenhum hook, configuração, firewall ou rede foi alterado, e nada foi commitado depois da Fase 0.
+
+## Fases 1 e 2 (em andamento)
+
+| Parte | Situação |
+|---|---|
+| Esqueleto | npm workspaces com `apps/world`, `apps/server` e `packages/shared`, versões exatas (ADR 0001). `npm run typecheck`, `npm test`, `npm run build:mundo`, `npm run servidor`, `npm run doctor`, `npm run simular` |
+| Fase 2, marco 1 | Feito e revisado. `packages/shared`: evento canônico e estado em zod, saneamento com allowlist, regex de segredos e guarda na saída. `apps/server`: configuração, resolução de sala, motor com os timers da seção 4.3, SQLite em WAL, simulador com 7 cenários, snapshot e SSE, página de depuração, doctor. 126 testes passando, incluindo replay determinístico e o teste de vazamento (que falha se a máscara for desligada). Decisões no ADR 0002 |
+| Fase 2, marco 2 | Feito: adaptadores reais (transcrições do Claude com catch-up, sessões vivas, rollouts do Codex, OpenMausBot com snapshot, SSE e delegações), fusão entre fontes e contagem de linhas ignoradas no doctor. 155 testes passando, inclusive contrato com o OpenMausBot 0.1.121 instalado e dois testes de vazamento. Evidência do G2 com as fontes reais: o doctor mostra cada fonte; uma sessão real do Claude Code apareceu na sala certa com mediana de 252 ms e máxima de 273 ms entre a linha no JSONL e o quadro no SSE; o banco real passou na guarda de vazamento. Turno real de bot do OpenMausBot visto em 22/10/2026, com uma mensagem do Igor a um bot de motor Codex: 7 quadros `runtime` viraram 5 eventos em cerca de 8 s (presença ativa, início do turno, uso de tokens, fim e presença ociosa), o bot foi para a sala do QG da equipe pela regra do config e contou uma entrega, e nenhum texto de mensagem chegou ao banco nem ao snapshot (os bots não têm nenhum campo de texto e as delegações ficaram vazias). **Ainda sem caso real:** ferramenta de bot, delegação por drone, erro e interrupção |
+| Fase 2, revisão de privacidade | Feita por outro agente, só leitura, com prova por script de dados inventados. Achou 11 problemas e 5 plausíveis. O mais grave: caminho de rede (UNC ou WSL) citado numa ferramenta fazia o servidor sondar o host remoto, o que no Windows pode entregar o hash NTLM. Os outros: título de sessão em pasta excluída vazava; caminho com espaço vazava pela metade; formatos de segredo e caracteres invisíveis passavam; o banco não passava pela guarda; nome de equipe como `constructor` derrubava o servidor; opção de privacidade desligada não apagava o já gravado; doctor com caminho completo; HEAD no SSE pendurava conexão; varredura síncrona crescendo com o histórico. Corrigidos no marco 3 da Fase 2, cada um com teste: 201 testes passando, teste de vazamento refeito com canários exatos procurados como texto puro em todas as saídas, e mutação (desligar uma proteção por vez) provando que cada proteção tem teste. Conferi rodando de novo as provas do revisor. Segunda passada: as 16 correções se confirmaram e apareceram 7 problemas novos, em correção pelo agente da Fase 2: dois médios nas salas (projeto fora das raízes conhecidas virava uma sala por subpasta; uma fila única deixava um disco lento segurar todos os agentes e criar salas erradas), a marca de privado que se perdia ao reiniciar, um resto de caminho relativo com espaço, saneamento apagando texto legítimo demais, erro repetido escondido da `/saude` e o SSE que um processo local conseguia lotar. Também faltava teste que falhasse sem as guardas da `/saude` e do doctor. Corrigidos no marco 4 da Fase 2: 229 testes passando, mutação derrubando um teste para cada proteção nova, e eu conferi rodando de novo os scripts do revisor e 39 casos difíceis de saneamento (só a senha escrita em frase, como "minha senha é ...", ainda passava; corrigida no marco 5 e conferida com os mesmos casos) |
+| Fase 2, salas nos dados reais | O snapshot real mostrou salas que não deviam existir: pastas de apoio na raiz de uma agregadora sem git (`docs`, `tmp`), a pasta de rascunho das sessões em `%TEMP%` e salas de origem desconhecida. Também havia vaivém: evento sem caminho devolvia o agente à sala do cwd. Corrigido no marco 5, com dados inventados: evento sem caminho mantém a sala; arquivo só leva a sala de projeto (raiz git, filha de agregadora ou apelido); pastas de apoio (`salas.pastasDeApoio`) contam para a agregadora; arquivo em rascunho (`salas.rascunho`, padrão `%TEMP%`) ou em sala fixa não move o agente; gravação move na hora e leitura só depois de 3 eventos seguidos. 240 testes passando e mutação derrubando um teste para cada regra nova. Nos dados reais, com o banco recomeçado às 18:06 de 22/10/2026: de 20 para 16 salas, sem as pastas de apoio, a de rascunho e a de arquivos dos agentes, e o doctor mostra, por motivo, quantos arquivos deixaram o agente na sala atual. Uma sala de projeto sem regra de ala ficou na Recepção, esperando classificação |
+| Fase 2, defeito antigo achado no caminho | Um agente com ferramenta pendente e parado 20 min alternava entre dormir e "talvez esperando" sem fim, e o servidor não subia com o banco real. Corrigido com teste: o "talvez" só vale para estado de trabalho e há uma trava de repetição no mesmo instante |
+| Banco de testes | Os bancos de teste de 22/10/2026 em `%LOCALAPPDATA%\Arcadia\dados` foram apagados com o ok do Igor depois da correção; o próximo servidor começa limpo. Não havia cópia do banco real em outro lugar. Às 18:06, também com o ok do Igor, o banco real recomeçou para valerem as regras de sala do marco 5; o anterior foi movido, sem apagar, para `%LOCALAPPDATA%\Arcadia\banco-anterior-2026-10-22-1806` |
+| Fase 1 | Marcos 1 e 2 entregues: motor genérico em PixiJS (`apps/world`), cena base com o stand-by das alas e a cápsula de recarga dos bots, e a página `/prototipos` com as cinco perguntas de gosto e o elenco nos dois tamanhos. Typecheck e build verdes; nada pessoal no Git nem no build (o pacote de personagens e o cenário com as alas reais ficam em `docs/local` e só o Vite em desenvolvimento serve, só para o próprio PC). No perfil do Moto G14, todas as opções seguraram 30 fps a 4x e 6x. Decisões no ADR 0003. Revisão visual independente feita: confirmou o pixel perfeito, a fidelidade à prancha, o orçamento e os 30 fps a 6x, e achou 17 problemas, 4 altos (no aquário o acordar da ala acontecia fora da tela; `/prototipos` recarregava a cada troca e no celular escondia a opção B; balões cortados e sobrepostos; as capturas das perguntas 1 e 2 comparavam zooms diferentes). Corrigidos em 23/10/2026, cada um com prova de antes e depois: o acordar fica na tela, `/prototipos` não recarrega, nenhum balão cortado ou sobreposto, comparações no mesmo zoom, ordem de desenho sem erro, ícones com contraste de 4,4 a 14,7 para 1 à noite e movimento reduzido respeitado. O build final segura 30 fps a 4x e 6x no perfil do Moto G14. Conferi typecheck, build, escrita e a ausência de dados pessoais no build. Portão G1 em 23/10/2026: o Igor aceitou todas as recomendações (24 por 40; passe à mão só nos humanos; no celular em pé, isométrico como padrão e corte lateral a um toque; noite fria; andar cheio; letreiro respirando com ícone fixo de espera; roupa alternativa para um dos humanos do pacote local). O agente da Fase 1 está aplicando as escolhas como padrão |
+
+Achado da máquina no caminho: um npm 6 antigo fora do projeto entra no lugar quando um script do `package.json` chama `npm` por dentro. Os scripts da raiz chamam `tsc`, `vite` e `node` direto.
 
 ## O que existe
 
@@ -15,13 +30,15 @@ A Fase 0 (preparação e verificação, sem código de produto) está feita: con
 | `docs/estudo/01` a `05` | o estudo de 22/10/2026 |
 | `docs/proxima-sessao.md` | o único roteiro vigente |
 | `docs/decisoes/0001-stack.md` | ADR da stack: PixiJS 8.22.0 no mundo, Node com Hono e `node:sqlite` no servidor |
+| `docs/decisoes/0002-nucleo-de-dados.md` | ADR do núcleo de dados e do protocolo (snapshot e SSE) |
+| `docs/decisoes/0003-mundo.md` | ADR do mundo em PixiJS: formato de cena, renderizador, stand-by, medidas |
 | `docs/creditos.md` | terceiros e licenças |
 | `config/arcadia.config.exemplo.yaml` | exemplo genérico de configuração |
 | `tools/checar-escrita.mjs` | checagem das regras de escrita (`node tools/checar-escrita.mjs`) |
+| `scripts/rede-local.ps1` | imprime os comandos de rede para ver no celular (não executa nada) |
+| `package.json`, `apps/`, `packages/` | o código das Fases 1 e 2 (em andamento, ainda sem commit) |
 | `docs/conceitos/direcoes-de-arte.html` | prancha 3D da primeira rodada (histórico) |
-| `docs/local/` (fora do Git) | contexto pessoal, prancha em pixel art, verificação detalhada, rascunho da configuração real e a prova do motor |
-
-Nada de `apps/`, `packages/` ou `package.json` ainda: isso começa na Fase 1.
+| `docs/local/` (fora do Git) | contexto pessoal, prancha em pixel art, verificação detalhada, configuração real com o mapa de alas, passo a passo da rede e a prova do motor |
 
 ## Verificação da Fase 0 (só leitura)
 
@@ -88,6 +105,8 @@ Celular emulado: 360 por 740, DPR 3, toque, CPU limitada pelo CDP, resolução i
 8. **OpenMausBot:** `mascotBody` e `mascotExpression` não vieram em nenhum bot (o app parece omitir o padrão `cursor`); o WireBot ganhou campos novos (`soulDrift`, `soulHash`, `installedPackage`, `playbooks`, `connectorTools`, entre outros). A equipe que está no app hoje não é a primeira equipe descrita no contexto local (detalhe em `docs/local/verificacao-omb.md`).
 9. **A prancha não tem `<meta name="viewport">`.** Aberta como arquivo no celular, ela vira o layout de PC reduzido (no claude.ai o host resolve). O produto precisa da meta; a prova já tem.
 10. **A prancha borra alguns pontos:** `pxl` desenha em coordenada fracionária sem arredondar (LEDs dos racks, carro holográfico, peixes). Na prova em PixiJS tudo é inteiro e fica nítido.
+11. **Achados da Fase 2 nas fontes reais:** as transcrições do Claude trazem ainda os tipos `frame-link`, `artifact-comment-monitor` e `artifact-autoreact-ledger` e ferramentas novas do app desktop (Workflow, Monitor, TaskCreate e outras); os rollouts do Codex trazem `sub_agent_activity`, `mcp_tool_call_end` e `patch_apply_end` e as ferramentas `exec`, `js`, `send_message` e `followup_task`; no Codex, o id do item só bate com o `call_id` em cerca de 1 de cada 5 casos, então a falha vem do status do `item_completed`.
+12. **OpenMausBot 0.1.121:** `cap.exhausted` não está mais na validação do RuntimeEvent (o adaptador ainda o trata), e o quadro `bot.queued` traz o texto das mensagens na fila (o Arcadia usa só a contagem).
 
 ## O que não foi verificado
 
@@ -97,8 +116,15 @@ Celular emulado: 360 por 740, DPR 3, toque, CPU limitada pelo CDP, resolução i
 - O renderizador Canvas do PixiJS (plano B) foi medido só no PC.
 - Tempo de carga no celular: o pacote completo do PixiJS (232 KB com gzip) não teve a abertura cronometrada com CPU limitada.
 
-## Pendências do portão G0
+## Portão G0: respostas do Igor (22/10/2026)
 
-- Respostas do Igor: modelo do celular e versão do Android; rede Privada e regra de firewall; mapa de alas (rascunho em `docs/local/arcadia.config.rascunho.yaml`); modo autônomo nas Fases 1 e 2.
+1. **Celular-alvo:** Moto G14 com Android 14. Tela LCD de 6,5" em 1080 por 2400 a 60 Hz, Unisoc T616 (2 núcleos Cortex-A75 e 6 Cortex-A55), GPU Mali-G57 MP1, 4 GB de RAM. O Chrome é atual, então o build não precisa de alvo antigo. Emulação nas medições: 412 por 915, DPR 2,625, CPU limitada a 4x e 6x.
+2. **Rede:** decidido em 22/10/2026 que a Wi-Fi de casa vira **Privada**. Os comandos (abrir, conferir e desfazer) saem de `scripts/rede-local.ps1`, que só lê a rede e imprime; o Igor roda como administrador quando for a hora de ver no celular. A regra libera só a porta 4780, só no perfil Privado e só para a sub-rede local; fora de casa a porta continua fechada. Até ele rodar, tudo é servido só no PC.
+3. **Mapa de alas confirmado** (configuração real fora do Git): Copiloto, Kyber Tech, Estúdio, Trabalho, SABINVS e academia, Produtos, Pessoal, Arcadia, Bastidores e Recepção. O Cockpit continua como área fixa do andar, não como ala de projetos.
+4. **Modo autônomo:** sim. Fases 1 e 2 em paralelo com subagentes, parando só nos portões do Igor (escolha visual no G1, rede e commit).
 
-O commit e o push da Fase 0 em `main` foram autorizados em 22/10/2026, só com o que está no Git (nada de `docs/local/`).
+Decisões de mundo tomadas pelo Igor depois do G0, em 22/10/2026:
+- **Stand-by:** ala sem atividade fica em meia-luz, com letreiro apagado, telas desligadas e linhas de dados sem pulso, e acorda em sequência quando ele começa a trabalhar num projeto dela; o androide chega pelo teletransporte e a câmera do aquário vai até lá.
+- **Bots parados:** agentes fixos (bots do OpenMausBot) ficam em stand-by na própria ala, numa cápsula de recarga, e acordam quando recebem trabalho; academia e lounge só para pausas curtas entre tarefas.
+
+O commit e o push da Fase 0 em `main` foram feitos em 22/10/2026 (`16c152a`), só com o que está no Git (nada de `docs/local/`).

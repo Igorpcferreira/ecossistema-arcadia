@@ -16,7 +16,7 @@ import { fileURLToPath } from 'node:url';
 const RAIZ = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PULAR_PASTAS = new Set(['.git', 'node_modules', 'dist', 'coverage', '.vite', 'dados']);
 const PULAR_CAMINHOS = ['docs/local/']; // fora do Git
-const EXTENSOES = new Set(['.md', '.html', '.css', '.js', '.mjs', '.cjs', '.ts', '.tsx', '.json', '.yaml', '.yml', '.txt']);
+const EXTENSOES = new Set(['.md', '.html', '.css', '.js', '.mjs', '.cjs', '.ts', '.tsx', '.json', '.yaml', '.yml', '.txt', '.ps1']);
 
 // Os caracteres proibidos são montados pelo código, para este arquivo não conter nenhum deles.
 const TRAVESSAO = new RegExp('[' + String.fromCharCode(0x2014, 0x2013) + ']');

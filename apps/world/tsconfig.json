@@ -1,0 +1,11 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "types": ["vite/client", "node"],
+    // Código de pixel art indexa tabelas o tempo todo (cores, quadros, pontos); a checagem de
+    // índice sem garantia viraria um "!" em cada linha sem ganho real aqui.
+    "noUncheckedIndexedAccess": false
+  },
+  "include": ["src", "vite.config.ts"]
+}

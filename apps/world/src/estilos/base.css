@@ -1,0 +1,94 @@
+/* Identidade do Arcadia (05-direcoes-de-arte.md, seção 5): fundo noturno, painéis, linhas,
+   ciano, âmbar e magenta; Silkscreen nos títulos e botões, VT323 nos balões e números. */
+:root {
+  --fundo: #0a0c1b;
+  --painel: #131733;
+  --painel-forte: #1b2046;
+  --linha: #2b3170;
+  --texto: #eef0ff;
+  --texto-suave: #a9aed6;
+  --ciano: #3ee0ff;
+  --ambar: #ffb347;
+  --magenta: #ff4fd8;
+  --vidro: rgba(10, 12, 27, 0.84);
+  --titulo: 'Silkscreen', 'Atkinson Hyperlegible', system-ui, sans-serif;
+  --pixel: 'VT323', ui-monospace, Consolas, monospace;
+  --corpo: 'Atkinson Hyperlegible', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+html, body { margin: 0; background: var(--fundo); color: var(--texto); }
+body { font-family: var(--corpo); font-size: 16px; line-height: 1.55; }
+button:focus-visible { outline: 2px solid var(--ciano); outline-offset: 2px; }
+
+/* palco do mundo (usado pelas duas páginas) */
+.arc-palco { position: relative; overflow: hidden; background: #070815; touch-action: none; user-select: none; -webkit-user-select: none; width: 100%; height: 100%; }
+/* palco dentro de uma página que rola (/prototipos no celular): o arrasto vertical rola a página até um toque no mundo */
+.arc-palco[data-rolagem='1']:not([data-interagindo='1']) { touch-action: pan-y; }
+.arc-mundo { position: absolute; left: 0; top: 0; image-rendering: pixelated; image-rendering: crisp-edges; display: block; }
+.arc-baloes { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
+.arc-balao {
+  position: absolute; left: 0; top: 0; pointer-events: none;
+  /* texto longo quebra em duas linhas em vez de passar da tela */
+  white-space: normal; text-wrap: balance; max-width: min(420px, calc(100% - 16px)); width: max-content;
+  font: 400 18px/1 var(--pixel); color: #14162b; background: #fffaf0;
+  padding: 2px 7px 3px; border: 2px solid #14162b; box-shadow: 3px 3px 0 rgba(0, 0, 0, .35);
+}
+/* o bico aponta para o personagem mesmo com a caixa presa na borda (--bico, em px); empilhado, some */
+.arc-balao::after { content: ''; position: absolute; left: calc(var(--bico, 50%) - 5px); bottom: -7px; width: 6px; height: 5px; background: inherit; border: 2px solid #14162b; border-top: 0; }
+.arc-balao[data-solto='1']::after { display: none; }
+.arc-balao[data-e='esperando'] { background: #ffd35c; }
+.arc-balao[data-e='talvez'] { background: #f0dca0; border-style: dashed; }
+.arc-balao[data-e='erro'] { background: #ff8f80; }
+.arc-balao[data-e='entregou'] { background: #9effc4; }
+.arc-balao[data-e='treinando'] { background: #ffc2e3; }
+.arc-balao[data-e='limite'] { background: #cdb8ff; }
+.arc-balao[data-e='fixo'] { background: #ffd9cf; }
+.arc-balao[data-e='dono'] { background: #ffe2a8; }
+
+.arc-hud { position: absolute; inset: 0; pointer-events: none; display: flex; flex-direction: column; justify-content: space-between; padding: 10px; gap: 10px; }
+.arc-hud-topo { display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; flex-wrap: wrap; }
+.arc-etiqueta { display: inline-flex; align-items: center; gap: 10px; background: var(--vidro); border: 2px solid #050611; box-shadow: 0 0 0 2px var(--linha); padding: 4px 10px; font: 700 14px/1 var(--titulo); }
+.arc-etiqueta .num { font: 400 20px/1 var(--pixel); color: var(--texto-suave); }
+.arc-controles { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; pointer-events: auto; }
+.arc-btn { appearance: none; font: 400 12px/1 var(--titulo); color: var(--texto); background: var(--vidro); border: 2px solid #050611; box-shadow: 0 0 0 2px var(--linha); padding: 7px 10px; cursor: pointer; }
+.arc-btn.quad { width: 34px; padding-inline: 0; font-size: 18px; }
+.arc-btn[aria-pressed='true'] { color: #071018; background: var(--ciano); }
+.arc-btn:active { transform: translate(1px, 1px); }
+.arc-debug { align-self: flex-start; font: 400 16px/1.1 var(--pixel); color: var(--texto-suave); background: var(--vidro); padding: 2px 8px; border: 2px solid #050611; }
+.arc-hud-base { display: flex; justify-content: space-between; align-items: flex-end; gap: 10px; }
+.arc-ticker { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; width: min(470px, 100%); }
+.arc-ticker li { display: flex; align-items: center; gap: 8px; background: var(--vidro); border: 2px solid #050611; box-shadow: 0 0 0 2px var(--linha); padding: 3px 8px; font: 400 18px/1.1 var(--pixel); min-width: 0; animation: arc-entra .3s steps(3) both; }
+.arc-ticker .ponto { width: 10px; height: 10px; flex: none; }
+.arc-ticker .txt { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.arc-ticker .quando { margin-left: auto; flex: none; font: 400 17px/1 var(--pixel); color: var(--texto-suave); }
+@keyframes arc-entra { from { transform: translateY(6px); opacity: .2; } to { transform: none; opacity: 1; } }
+.arc-precisa { pointer-events: auto; appearance: none; font: 400 19px/1 var(--pixel); color: #1d1300; background: #ffd35c; border: 2px solid #050611; box-shadow: 0 0 0 2px #8a5a00; padding: 7px 10px; cursor: pointer; animation: arc-pisca 1s steps(2) infinite; }
+@keyframes arc-pisca { 50% { background: #ffb347; } }
+.arc-cartao { position: absolute; top: 52px; right: 10px; width: min(330px, calc(100% - 20px)); pointer-events: auto; background: var(--painel); border: 3px solid #050611; box-shadow: 0 0 0 3px var(--linha), 6px 6px 0 rgba(0, 0, 0, .4); padding: 12px; display: grid; gap: 8px; }
+.arc-cartao-topo { display: flex; align-items: center; gap: 10px; }
+.arc-cartao-topo canvas { image-rendering: pixelated; flex: none; }
+.arc-cartao-topo strong { font: 700 15px/1.2 var(--titulo); }
+.arc-cartao-topo .cargo { display: block; font-size: 13px; color: var(--texto-suave); font-weight: 400; font-family: var(--corpo); }
+.arc-cartao-topo button { margin-left: auto; align-self: flex-start; appearance: none; background: transparent; color: var(--texto); border: 2px solid var(--linha); width: 30px; height: 30px; font: 700 13px/1 var(--titulo); cursor: pointer; flex: none; }
+.arc-cartao dl { margin: 0; display: grid; grid-template-columns: auto 1fr; gap: 3px 10px; font-size: 14px; }
+.arc-cartao dt { color: var(--texto-suave); }
+.arc-cartao dd { margin: 0; min-width: 0; }
+.arc-cartao .sub { font: 400 11px/1 var(--titulo); color: var(--ciano); }
+.arc-cartao ol { margin: 0; padding: 0; list-style: none; display: grid; gap: 3px; font-size: 13px; }
+.arc-cartao ol li { display: flex; gap: 8px; }
+.arc-cartao ol .q { font: 400 16px/1.1 var(--pixel); color: var(--texto-suave); flex: none; width: 4.6em; }
+.arc-carga { position: absolute; inset: 0; display: grid; place-items: center; font: 400 22px/1 var(--pixel); color: var(--texto-suave); background: #070815; }
+.arc-erro { margin: 16px; white-space: pre-wrap; font: 400 18px/1.3 var(--pixel); color: #ff8f80; }
+
+.arc-palco[data-celular='1'] .arc-ticker li:nth-last-child(n+2) { display: none; }
+/* no celular, a 30 cm: letra do balão perto de 2,3 mm */
+.arc-palco[data-celular='1'] .arc-balao { font-size: 22px; padding: 2px 6px 3px; }
+.arc-palco[data-celular='1'] .arc-cartao { top: auto; bottom: 10px; }
+.arc-palco[data-celular='1'] .arc-btn { padding: 5px 7px; font-size: 10px; }
+.arc-palco[data-celular='1'] .arc-btn.quad { width: 28px; font-size: 14px; }
+.arc-palco[data-celular='1'] .so-pc, .arc-palco[data-hud='enxuto'] .so-pc { display: none; }
+.arc-palco[data-celular='1'] .arc-etiqueta { font-size: 12px; padding: 3px 8px; }
+.arc-palco[data-celular='1'] .arc-etiqueta .num { font-size: 17px; }
+@media (prefers-reduced-motion: reduce) { .arc-ticker li, .arc-precisa { animation: none; } }

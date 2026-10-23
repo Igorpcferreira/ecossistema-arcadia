@@ -1,0 +1,63 @@
+/* Página /prototipos: perguntas em cartões, palco do mundo (um ou dois lado a lado) e elenco. */
+.pagina { max-width: 1320px; margin: 0 auto; padding-block: 22px 64px; padding-inline: max(16px, env(safe-area-inset-left, 0px)) max(16px, env(safe-area-inset-right, 0px)); display: grid; gap: 18px; }
+.topo { display: grid; gap: 8px; max-width: 80ch; }
+.selo { font: 400 13px/1.3 var(--titulo); letter-spacing: .04em; color: var(--ciano); }
+h1 { font: 700 clamp(26px, 4.6vw, 44px)/1.08 var(--titulo); margin: 0; text-shadow: 3px 3px 0 #2a1f6b; }
+.lead { margin: 0; color: var(--texto-suave); font-size: 16.5px; }
+.links { margin: 0; display: flex; flex-wrap: wrap; gap: 8px 18px; font-size: 14.5px; align-items: center; }
+.links a { color: var(--ciano); }
+.links .origem { color: var(--texto-suave); font: 400 17px/1 var(--pixel); }
+.barra { display: flex; flex-wrap: wrap; gap: 10px 18px; align-items: center; }
+.barra .grupo { display: inline-flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.barra .rotulo { font: 400 11px/1 var(--titulo); color: var(--texto-suave); margin-right: 2px; }
+.chip { appearance: none; font: 400 11px/1 var(--titulo); color: var(--texto); background: var(--painel); border: 2px solid #050611; box-shadow: 0 0 0 2px var(--linha); padding: 7px 9px; cursor: pointer; }
+.chip[aria-pressed='true'] { color: #071018; background: var(--ciano); }
+.perguntas { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 12px; }
+.pergunta { background: var(--painel); border: 2px solid #050611; box-shadow: 0 0 0 2px var(--linha); padding: 10px 12px 12px; display: grid; gap: 8px; align-content: start; }
+.pergunta.em-comparacao { box-shadow: 0 0 0 2px var(--ambar); }
+.pergunta h3 { margin: 0; font: 700 13px/1.25 var(--titulo); display: flex; gap: 8px; align-items: baseline; }
+.pergunta .num { display: inline-grid; place-items: center; width: 22px; height: 22px; background: var(--ciano); color: #071018; font: 700 13px/1 var(--titulo); flex: none; }
+.opcoes { display: grid; gap: 6px; }
+.opcao { appearance: none; text-align: left; display: grid; gap: 3px; background: var(--painel-forte); color: var(--texto); border: 2px solid #050611; box-shadow: 0 0 0 2px var(--linha); padding: 7px 9px; cursor: pointer; font: 400 14px/1.35 var(--corpo); }
+.opcao b { font: 700 12px/1.2 var(--titulo); }
+.opcao span { color: var(--texto-suave); }
+.opcao[aria-pressed='true'] { box-shadow: 0 0 0 2px var(--ciano); background: #16304a; }
+.opcao[aria-pressed='true'] span { color: var(--texto); }
+.opcao .g1 { font: 400 16px/1 var(--pixel); font-style: normal; color: var(--ambar); }
+.opcao[data-g1='1'] { border-color: #3a2a0a; }
+.comparar { appearance: none; justify-self: start; background: transparent; color: var(--ambar); border: 0; padding: 2px 0; font: 400 16px/1.1 var(--pixel); cursor: pointer; text-decoration: underline; text-underline-offset: 3px; }
+.pergunta .nota { margin: 0; font-size: 12.5px; color: var(--texto-suave); }
+.palcos { display: grid; gap: 14px; grid-template-columns: 1fr; }
+.palcos[data-n='2'] { grid-template-columns: 1fr 1fr; }
+.abas { display: flex; gap: 8px; grid-column: 1 / -1; }
+.palco-proto { margin: 0; display: grid; gap: 6px; justify-items: center; }
+.palco-proto .quadro { position: relative; width: 100%; aspect-ratio: 16 / 9; border: 3px solid #050611; box-shadow: 0 0 0 3px var(--linha), 8px 8px 0 #050611; overflow: hidden; background: #070815; }
+.palco-proto[data-telefone='1'] .quadro { width: min(100%, 412px); aspect-ratio: 412 / 915; max-height: 86vh; border-radius: 18px; border-width: 8px; }
+.palco-proto figcaption { display: grid; gap: 2px; justify-items: center; text-align: center; font-size: 14px; color: var(--texto-suave); max-width: 64ch; }
+.palco-proto figcaption b { font: 700 13px/1.2 var(--titulo); color: var(--texto); }
+.palco-proto .medida { font: 400 17px/1.1 var(--pixel); color: var(--ciano); }
+.palco-proto .dica { font-size: 13px; }
+.secao { display: grid; gap: 10px; }
+.secao h2 { font: 700 22px/1.15 var(--titulo); margin: 0; }
+.secao > p { margin: 0; color: var(--texto-suave); max-width: 80ch; }
+.elenco { display: grid; gap: 10px; }
+/* elenco em grade 2 por 2: 16 por 32 em cima, 24 por 40 embaixo (em linha, a coluna à mão do 24 saía cortada) */
+.elenco-linha { display: grid; grid-template-columns: 170px repeat(2, max-content); gap: 10px 16px; align-items: end; background: var(--painel); border: 2px solid #050611; box-shadow: 0 0 0 2px var(--linha); padding: 10px; overflow-x: auto; }
+.elenco-nome { grid-row: span 2; align-self: center; }
+.elenco-nome b { display: block; font: 700 12px/1.25 var(--titulo); }
+.elenco-nome span { font-size: 12.5px; color: var(--texto-suave); }
+.elenco-grupo { margin: 0; display: grid; gap: 4px; justify-items: start; }
+.elenco-fila { display: flex; gap: 6px; align-items: end; }
+.elenco-fila canvas { image-rendering: pixelated; background: #1b2046; }
+.elenco-grupo figcaption { font: 400 15px/1 var(--pixel); color: var(--texto-suave); }
+@media (max-width: 760px) {
+  /* no celular, o palco vem logo depois do título, antes das perguntas */
+  .topo { order: 0; } .palcos { order: 1; } .barra { order: 2; } .perguntas { order: 3; } .secao { order: 4; }
+  .palcos[data-n='2'] { grid-template-columns: 1fr; }
+  .palco-proto .quadro { aspect-ratio: 3 / 4; }
+  .elenco-linha { grid-template-columns: max-content max-content; }
+  .elenco-nome { grid-column: 1 / -1; grid-row: auto; }
+  .elenco-fila canvas:nth-child(n+4) { display: none; }
+}
+/* comparação: nada por cima do mundo além do HUD de cima (a faixa de eventos cobria um terço do palco) */
+.palco-proto[data-comparar='1'] .arc-ticker { display: none; }

@@ -1,0 +1,4 @@
+/* Página do mundo: o palco ocupa a tela inteira (celular parado na mesa ou janela do PC). */
+html, body { height: 100%; overflow: hidden; }
+#app { position: fixed; inset: 0; }
+#app .arc-palco { position: absolute; inset: 0; }

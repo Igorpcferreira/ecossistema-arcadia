@@ -16,6 +16,7 @@ Estado em 22/10/2026: **Fase 0 concluída** (preparação e verificação, sem c
 | `docs/creditos.md` | tudo de terceiros, com licença |
 | `config/arcadia.config.exemplo.yaml` | exemplo genérico de configuração (a real fica fora do repositório) |
 | `tools/checar-escrita.mjs` | checagem automática das regras de escrita |
+| `scripts/rede-local.ps1` | imprime os comandos (abrir, conferir e desfazer) para ver o Arcadia no celular pela Wi-Fi de casa; não executa nada |
 | `docs/estudo/01-openmausbot.md` | o OpenMausBot como fonte de dados (SSE, snapshot, delegação, autenticação) |
 | `docs/estudo/02-fontes-de-atividade.md` | Claude Code, Codex e MCP: de onde tirar a atividade e como proteger a privacidade |
 | `docs/estudo/03-referencias.md` | projetos parecidos e o que aproveitar deles |
@@ -23,6 +24,18 @@ Estado em 22/10/2026: **Fase 0 concluída** (preparação e verificação, sem c
 | `docs/estudo/05-direcoes-de-arte.md` | a direção de arte em pixel art e o histórico da rodada 3D |
 | `docs/conceitos/direcoes-de-arte.html` | prancha da rodada 3D (histórico) |
 | `docs/local/` | contexto pessoal e da máquina, fora do Git |
+
+## Como rodar
+
+Node 24 e `npm install` na raiz. Depois:
+
+| Comando | O que faz |
+|---|---|
+| `npm run dev:mundo` | o mundo em `http://127.0.0.1:4781/` e os protótipos em `http://127.0.0.1:4781/prototipos` |
+| `npm run simular` | o servidor com o simulador; depuração em `http://127.0.0.1:4780/depurar` |
+| `npm run servidor -- --config <arquivo>` | o servidor com as fontes reais, só leitura |
+| `npm run doctor -- --config <arquivo>` | explica em português o estado de cada fonte |
+| `npm test`, `npm run typecheck`, `npm run checar:escrita` | as verificações |
 
 ## Como começar
 

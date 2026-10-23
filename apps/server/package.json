@@ -1,0 +1,21 @@
+{
+  "name": "@arcadia/server",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node --watch src/main.ts",
+    "start": "node src/main.ts",
+    "doctor": "node src/doctor.ts",
+    "simular": "node src/main.ts --simulador dia-normal",
+    "test": "node --test \"src/**/*.test.ts\"",
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@arcadia/shared": "*",
+    "@hono/node-server": "2.1.4",
+    "chokidar": "5.0.0",
+    "hono": "4.13.13",
+    "js-yaml": "5.4.3"
+  }
+}
