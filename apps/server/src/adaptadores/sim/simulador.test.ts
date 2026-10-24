@@ -2,7 +2,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { EsquemaEstadoMundo, sanearEvento, type ArcadiaEvent } from '@arcadia/shared';
-import { CENARIOS, DURACAO_PADRAO_MS, gerarCenario, iniciarSimulacao, type Cenario } from './simulador.ts';
+import { AGENTES_ESTADOS, CENARIOS, DURACAO_PADRAO_MS, ROTEIRO_ESTADOS, gerarCenario, iniciarSimulacao, type Cenario } from './simulador.ts';
 import { aplicar, configMotorPadrao, criarEstadoInicial, type EstadoMotor } from '../../mundo/motor.ts';
 import { relogioFalso } from '../../util/relogio.ts';
 import { json } from '../../testes/apoio.ts';
@@ -174,4 +174,100 @@ test('velocidade 10 comprime o tempo', () => {
   relogio.avancar(DURACAO_PADRAO_MS.pico / 10);
   assert.equal(emitidos.length, gerarCenario('pico', { semente: 1, inicio: T0 }).length);
   assert.ok((emitidos.at(-1)?.ts ?? 0) <= T0 + DURACAO_PADRAO_MS.pico / 10);
+});
+
+/** Roda duas rodadas seguidas do cenário "estados" e confere cada passo do roteiro documentado, meio segundo depois. */
+function conferirRoteiroEstados(cfgE: ReturnType<typeof configMotorPadrao>, semente: number) {
+  const DURACAO = DURACAO_PADRAO_MS.estados;
+  const rodadas = [0, 1].map((rodada) => ({ rodada, inicio: T0 + rodada * DURACAO }));
+  const eventos = rodadas.flatMap(({ rodada, inicio }) => gerarCenario('estados', { semente, inicio, alas: IDS_ALAS, rodada }));
+  const passos = ROTEIRO_ESTADOS.filter((p) => !p.ocioCurto || cfgE.pausaMs === 15_000);
+  const checagens = rodadas
+    .flatMap(({ rodada, inicio }) => passos.map((p) => ({ rodada, inicio, p, quando: inicio + Math.round((p.t + 0.5) * 1000) })))
+    .sort((a, b) => a.quando - b.quando);
+  let e = criarEstadoInicial(T0, cfgE, RECEP);
+  e = aplicar(e, { k: 'alas', agora: T0, alas: ALAS, recepcao: RECEP }, cfgE).estado;
+  const emitidos: { quando: number; ev: ArcadiaEvent }[] = [];
+  const guardar = (r: ReturnType<typeof aplicar>, quando: number) => {
+    for (const m of r.mudancas) if (m.k === 'evento') emitidos.push({ quando, ev: m.evento });
+    return r.estado;
+  };
+  const erros: string[] = [];
+  const fotos = new Map<string, EstadoMotor>();
+  let i = 0;
+  for (const c of checagens) {
+    while (i < eventos.length && (eventos[i] as ArcadiaEvent).recebidoEm <= c.quando) {
+      const ev = eventos[i++] as ArcadiaEvent;
+      e = guardar(aplicar(e, { k: 'evento', evento: ev }, cfgE), ev.recebidoEm);
+    }
+    e = guardar(aplicar(e, { k: 'tick', agora: c.quando }, cfgE), c.quando);
+    const visto = e.mundo.agentes[c.p.agente]?.estado ?? 'fora';
+    if (visto !== c.p.estado) erros.push(`rodada ${c.rodada}, ${c.p.t} s, ${c.p.agente}: esperava ${c.p.estado}, veio ${visto}`);
+    fotos.set(`${c.rodada}:${c.p.t}:${c.p.agente}`, e);
+  }
+  return { erros, fotos, emitidos, rodadas, passos };
+}
+
+test('estados: cada passo do roteiro documentado acontece na hora, nas duas rodadas, com o ócio curto e com o padrão', () => {
+  for (const cfgE of [configMotorPadrao({ pausaMs: 15_000, dormeMs: 30_000 }), configMotorPadrao()]) {
+    for (const semente of [1, 42]) {
+      const { erros, passos } = conferirRoteiroEstados(cfgE, semente);
+      assert.deepEqual(erros, [], `pausa ${cfgE.pausaMs / 1000} s, semente ${semente}:\n${erros.join('\n')}`);
+      assert.ok(passos.length >= 30);
+    }
+  }
+});
+
+test('estados: o roteiro cobre a tabela 4.3 inteira, mais talvez esperando, saindo, pausa e sono', () => {
+  const estados = new Set(ROTEIRO_ESTADOS.map((p) => p.estado));
+  const tabela = ['chegando', 'pensando', 'lendo', 'editando', 'comando', 'delegando', 'esperando', 'erro', 'entregou', 'ocioso', 'na-fila', 'sem-sinal', 'limite'];
+  for (const s of [...tabela, 'talvez-esperando', 'saindo', 'pausa', 'dormindo']) assert.ok(estados.has(s as never), `falta ${s}`);
+  // Um estado de cada vez: o mesmo agente nunca tem dois passos a menos de 1 s, e o roteiro está em ordem.
+  for (let i = 1; i < ROTEIRO_ESTADOS.length; i++) assert.ok((ROTEIRO_ESTADOS[i] as { t: number }).t >= (ROTEIRO_ESTADOS[i - 1] as { t: number }).t, 'em ordem');
+  const porAgente = new Map<string, number[]>();
+  for (const p of ROTEIRO_ESTADOS) porAgente.set(p.agente, [...(porAgente.get(p.agente) ?? []), p.t]);
+  for (const [agente, ts] of porAgente) for (let i = 1; i < ts.length; i++) assert.ok((ts[i] as number) - (ts[i - 1] as number) >= 1, `${agente}: passos colados em ${ts[i]} s`);
+});
+
+test('estados: sala nova a cada rodada, subagente filho da sessão, fila, espera resolvida e delegação entre bots', () => {
+  const { fotos, emitidos, rodadas } = conferirRoteiroEstados(configMotorPadrao({ pausaMs: 15_000, dormeMs: 30_000 }), 42);
+  const foto = (rodada: number, t: number, agente: string) => {
+    const f = fotos.get(`${rodada}:${t}:${agente}`);
+    assert.ok(f, `sem foto em ${t} s`);
+    return f.mundo;
+  };
+  const S = AGENTES_ESTADOS.sessao;
+  for (const { rodada, inicio } of rodadas) {
+    // Sala nova: uma por rodada, com obra de 60 s na ala.
+    const chaveObra = `sim-estados-obra-${inicio.toString(36)}`;
+    const m155 = foto(rodada, 155, AGENTES_ESTADOS.pioneira);
+    assert.equal(m155.salas[chaveObra]?.alaId, 'trabalho');
+    assert.ok(m155.obras.some((o) => o.salaChave === chaveObra && o.fim === o.inicio + 60_000), 'a sala nova está em obra');
+    assert.equal(m155.agentes[AGENTES_ESTADOS.pioneira]?.salaChave, chaveObra);
+    // Subagente nasce na sala da sessão, filho dela.
+    const m44 = foto(rodada, 44, AGENTES_ESTADOS.subagente);
+    assert.equal(m44.agentes[AGENTES_ESTADOS.subagente]?.paiChave, S);
+    assert.equal(m44.agentes[AGENTES_ESTADOS.subagente]?.salaChave, 'sim-estados-sala');
+    // Talvez esperando é o sintético (espera.inicio do tipo talvez), não a fila.
+    assert.ok(emitidos.some((x) => x.ev.agente.chave === S && x.ev.tipo === 'espera.inicio' && x.ev.espera?.tipo === 'talvez' && x.ev.ts === inicio + 62_000));
+    assert.equal(foto(rodada, 62, S).precisaDeVoce.length, 0);
+    // Esperando você: na fila, com o tipo; resolvida: a fila esvazia e o espera.fim sai para o mundo (check verde).
+    assert.deepEqual(foto(rodada, 71, S).precisaDeVoce.map((x) => [x.agenteChave, x.tipo]), [[S, 'permissao']]);
+    assert.equal(foto(rodada, 79, S).precisaDeVoce.length, 0);
+    assert.ok(emitidos.some((x) => x.ev.agente.chave === S && x.ev.tipo === 'espera.fim' && x.ev.ts === inicio + 79_000));
+    // Delegação entre bots, com título; some quando o colega conclui.
+    const d = Object.values(foto(rodada, 102, AGENTES_ESTADOS.coordenacao).delegacoes);
+    assert.equal(d.length, 1);
+    assert.equal(d[0]?.de, AGENTES_ESTADOS.coordenacao);
+    assert.equal(d[0]?.para, AGENTES_ESTADOS.colega);
+    assert.ok(d[0]?.titulo);
+    assert.equal(Object.keys(foto(rodada, 115.2, AGENTES_ESTADOS.colega).delegacoes).length, 0);
+  }
+  // Entregas e erros entram nas métricas (a rodada 1 soma de novo).
+  const m = foto(1, 205, AGENTES_ESTADOS.pioneira).metricas;
+  assert.equal(m.entregas, 6, 'por rodada: sessão, colega e coordenação');
+  assert.equal(m.erros, 2);
+  // As salas fixas nascem uma vez só; a sala nova é outra a cada rodada.
+  const salas = Object.keys(foto(1, 205, AGENTES_ESTADOS.pioneira).salas).filter((k) => k.startsWith('sim-estados-'));
+  assert.equal(salas.length, 4);
 });

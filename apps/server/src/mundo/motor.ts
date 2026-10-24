@@ -11,7 +11,7 @@ import {
   ORIGENS_EXATAS, compactar, sanearTexto,
   type Acao, type Agente, type Ala, type ArcadiaEvent, type CategoriaFerramenta, type Delegacao, type EstadoAgente,
   type EstadoFonte, type EstadoMundo, type EstadoPresenca, type ItemPrecisaDeVoce, type Metricas, type Mudanca, type Obra, type Sala,
-  type SaudeFonte, type TipoEspera, type TipoEvento,
+  type SaudeFonte, type TemaAla, type TipoEspera, type TipoEvento,
 } from '@arcadia/shared';
 import { loteDaOrdem, terrenoDoIndice } from './layout.ts';
 import { chaveDoDia, diaTexto, proximaMeiaNoite } from './tempo.ts';
@@ -60,7 +60,8 @@ export function configMotorPadrao(parcial: Partial<ConfigMotor> = {}): ConfigMot
   };
 }
 
-export type AlaConfig = { id: string; nome: string; cor: string };
+/** Ala da configuração. O tema (opcional) só vem daqui: o banco não o guarda, e cada partida o aplica de novo. */
+export type AlaConfig = { id: string; nome: string; cor: string; tema?: TemaAla };
 
 export type FerramentaVisivel = { nome: string; categoria: CategoriaFerramenta; alvo?: string };
 export type Visivel = { estado: EstadoAgente; ferramenta?: FerramentaVisivel; espera?: { tipo: TipoEspera; desde: number } };
@@ -1362,14 +1363,19 @@ function aplicarAlas(r: Rascunho, alas: AlaConfig[], recepcao: AlaConfig, agora:
     const atual = de(r.mundo.alas, c.id);
     if (!atual) {
       const ordem = r.interno.proximaOrdemAla++;
-      r.alas()[c.id] = { id: c.id, nome: c.nome, cor: c.cor, ordem, lote: loteDaOrdem(ordem), tipo: 'projetos', ativa: true, criadaEm: agora };
+      const nova: Ala = { id: c.id, nome: c.nome, cor: c.cor, ordem, lote: loteDaOrdem(ordem), tipo: 'projetos', ativa: true, criadaEm: agora };
+      if (c.tema !== undefined) nova.tema = c.tema;
+      r.alas()[c.id] = nova;
       r.umaVez(`al:${c.id}`);
       r.sujos.alas.add(c.id);
-    } else if (atual.nome !== c.nome || atual.cor !== c.cor || !atual.ativa) {
+    } else if (atual.nome !== c.nome || atual.cor !== c.cor || !atual.ativa || atual.tema !== c.tema) {
       const m = r.alaMut(c.id);
       m.nome = c.nome;
       m.cor = c.cor;
       m.ativa = true;
+      // O tema segue a configuração: tirado de lá, ele sai do estado (o mundo volta a escolher).
+      if (c.tema !== undefined) m.tema = c.tema;
+      else delete m.tema;
     }
   }
   for (const a of Object.values(r.mundo.alas)) {

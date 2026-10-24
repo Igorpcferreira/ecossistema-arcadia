@@ -521,3 +521,21 @@ test('estado gravado com marca de vez num bot (antes da marca de turno): a limpe
   const depois = aplicar(limpo, { k: 'evento', evento: ev('pensando', T0 + 100, { agente: bot }) }, cfg).estado;
   assert.equal(depois.mundo.agentes['omb:b']?.nome, 'Unidade');
 });
+
+test('tema da ala segue a configuração: nasce com ela, muda com ela e sai quando ela tira', () => {
+  const m = new Mundo();
+  assert.equal(m.estado.mundo.alas['produtos']?.tema, undefined, 'sem tema na configuração, o mundo escolhe');
+  m.aplicar({ k: 'alas', agora: T0 + 1, alas: [{ ...ALAS[0]!, tema: 'laboratorio' }, ALAS[1]!, { id: 'nova', nome: 'Nova', cor: '#123456', tema: 'equipe' }], recepcao: RECEP });
+  assert.equal(m.estado.mundo.alas['produtos']?.tema, 'laboratorio');
+  assert.equal(m.estado.mundo.alas['nova']?.tema, 'equipe', 'ala nova já nasce com o tema');
+  const mudou = m.mudancas.filter((x) => x.k === 'ala').map((x) => (x.k === 'ala' ? [x.ala.id, x.ala.tema] : []));
+  assert.deepEqual(mudou.sort(), [['nova', 'equipe'], ['produtos', 'laboratorio']], 'a mudança leva a ala inteira, com o tema');
+  m.aplicar({ k: 'alas', agora: T0 + 2, alas: [{ ...ALAS[0]!, tema: 'laboratorio' }, ALAS[1]!, { id: 'nova', nome: 'Nova', cor: '#123456', tema: 'equipe' }], recepcao: RECEP });
+  assert.equal(m.mudancas.filter((x) => x.k === 'ala').length, 0, 'o mesmo tema não gera mudança');
+  m.aplicar({ k: 'alas', agora: T0 + 3, alas: [ALAS[0]!, ALAS[1]!, { id: 'nova', nome: 'Nova', cor: '#123456', tema: 'agencia' }], recepcao: RECEP });
+  assert.equal(m.estado.mundo.alas['produtos']?.tema, undefined, 'tirado da configuração, o tema sai do estado');
+  assert.ok(!('tema' in (m.estado.mundo.alas['produtos'] ?? {})));
+  assert.equal(m.estado.mundo.alas['nova']?.tema, 'agencia');
+  assert.equal(m.estado.mundo.alas['recepcao']?.tema, undefined, 'a Recepção não tem tema');
+  assert.ok(EsquemaEstadoMundo.safeParse(json(m.estado.mundo)).success);
+});

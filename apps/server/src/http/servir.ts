@@ -1,4 +1,5 @@
-// Abre um listener HTTP para um app Hono, com mensagem em português quando a porta já está ocupada.
+// Abre um listener HTTP para um app Hono (ou para quem atende no lugar dele), com mensagem em português quando a
+// porta já está ocupada.
 import type { Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { createAdaptorServer } from '@hono/node-server';
@@ -11,10 +12,13 @@ export class ErroPorta extends Error {
   }
 }
 
+/** Quem atende os pedidos de um listener: o fetch de um app Hono ou um despacho que repassa para ele. */
+export type Atendimento = Parameters<typeof createAdaptorServer>[0]['fetch'];
+
 export type Ouvinte = { host: string; porta: number; fechar(): Promise<void> };
 
-export function ouvir(app: Hono, host: string, porta: number, nome: string): Promise<Ouvinte> {
-  const servidor = createAdaptorServer({ fetch: app.fetch }) as Server;
+export function ouvir(app: Hono | Atendimento, host: string, porta: number, nome: string): Promise<Ouvinte> {
+  const servidor = createAdaptorServer({ fetch: typeof app === 'function' ? app : app.fetch }) as Server;
   return new Promise((resolver, rejeitar) => {
     const falhou = (e: NodeJS.ErrnoException) => {
       if (e.code === 'EADDRINUSE') rejeitar(new ErroPorta(`A porta ${porta} (${nome}) já está em uso por outro programa. Feche esse programa ou mude a porta na configuração.`));

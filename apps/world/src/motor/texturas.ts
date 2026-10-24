@@ -3,8 +3,10 @@
 // Os desenhos são feitos em lotes num rascunho grande, aparados (só os pixels visíveis vão
 // para o atlas) e guardados com o deslocamento até a âncora. Ler os pixels do rascunho uma vez
 // por lote (e não uma vez por desenho) deixou a carga bem mais rápida no celular.
-// Tudo é assado na carga; nada é desenhado pixel a pixel durante o jogo.
-import { Rectangle, Texture } from 'pixi.js';
+// Quase tudo é assado na carga. Depois dela, o que nasce com os dados (a placa de uma sala nova,
+// um bot novo) é assado uma vez, no próprio quadro em que aparece, direto na folha (assarTarde);
+// nada é redesenhado pixel a pixel a cada quadro.
+import { Rectangle, Texture, type TextureSource } from 'pixi.js';
 import { esquecerEstilo } from '../arte/primitivas.ts';
 
 export interface Quadro {
@@ -39,6 +41,14 @@ export class Atlas {
   private rascAltUsada = 0;
   private rascLargUsada = 0;
   private pronto = false;
+  /** Fontes do PixiJS de cada folha (existem depois de finalizar). */
+  private fontes: TextureSource[] = [];
+  /** Folhas que mudaram depois da carga: sobem para a placa de vídeo uma vez por quadro (publicar). */
+  private sujas = new Set<number>();
+  /** Rascunho pequeno dos desenhos feitos depois da carga. */
+  private rascTarde: HTMLCanvasElement | null = null;
+  /** Desenhos assados depois da carga (medição) e os que não couberam no atlas. */
+  tarde = { assados: 0, semLugar: 0 };
   /** Quantos desenhos já foram assados (para a barra de carga). */
   assados = 0;
   /** Tempo gasto na carga: desenhar, aparar (ler os pixels) e copiar para a folha. */
@@ -62,7 +72,7 @@ export class Atlas {
   assar(chave: string, w: number, h: number, ox: number, oy: number, desenhar: (g: CanvasRenderingContext2D) => void): number {
     const ja = this.chaves.get(chave);
     if (ja !== undefined) return ja;
-    if (this.pronto) throw new Error('atlas já finalizado: tudo precisa ser assado na carga');
+    if (this.pronto) return this.assarTarde(chave, w, h, ox, oy, desenhar);
     w = Math.max(1, Math.ceil(w)); h = Math.max(1, Math.ceil(h));
     if (w > RASC || h > RASC) throw new Error(`desenho grande demais para o rascunho: ${w} por ${h}`);
     let lugar = this.lugarNoRascunho(w, h);
@@ -149,12 +159,58 @@ export class Atlas {
     return { folha: this.folhas.length - 1, x: 0, y: 0 };
   }
 
+  /**
+   * Depois da carga: desenha num rascunho do tamanho do quadro, apara, copia para um lugar livre
+   * de uma folha e marca a folha para subir de novo à placa de vídeo. Sem lugar no atlas, o
+   * quadro fica vazio (o objeto aparece sem aquele desenho) e a falta é contada.
+   */
+  private assarTarde(chave: string, w: number, h: number, ox: number, oy: number, desenhar: (g: CanvasRenderingContext2D) => void): number {
+    w = Math.max(1, Math.ceil(w)); h = Math.max(1, Math.ceil(h));
+    const c = this.rascTarde ?? (this.rascTarde = document.createElement('canvas'));
+    if (c.width < w) c.width = w;
+    if (c.height < h) c.height = h;
+    const g = c.getContext('2d', { willReadFrequently: true })!;
+    g.setTransform(1, 0, 0, 1, 0, 0); g.clearRect(0, 0, c.width, c.height);
+    g.save(); g.beginPath(); g.rect(0, 0, w, h); g.clip();
+    g.globalAlpha = 1; g.globalCompositeOperation = 'source-over';
+    esquecerEstilo(g); desenhar(g); g.restore(); esquecerEstilo(g);
+    const px = new Uint32Array(g.getImageData(0, 0, w, h).data.buffer);
+    let x0 = w, y0 = h, x1 = -1, y1 = -1;
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) if (px[y * w + x] !== 0) { if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; }
+    const id = this.itens.length;
+    this.chaves.set(chave, id);
+    this.assados++; this.tarde.assados++;
+    const vazio = () => { this.itens.push({ folha: -1, x: 0, y: 0, w: 0, h: 0, dx: 0, dy: 0 }); this.quadros.push({ tex: Texture.EMPTY, dx: 0, dy: 0, w: 0, h: 0 }); return id; };
+    if (x1 < 0) return vazio();
+    const tw = x1 - x0 + 1, th = y1 - y0 + 1;
+    let lugar: { folha: number; x: number; y: number };
+    try { lugar = this.reservar(tw, th); } catch { this.tarde.semLugar++; return vazio(); }
+    const f = this.folhas[lugar.folha];
+    f.g.drawImage(c, x0, y0, tw, th, lugar.x, lugar.y, tw, th);
+    f.usados += tw * th;
+    let fonte = this.fontes[lugar.folha];
+    if (!fonte) { fonte = Texture.from(f.c).source; fonte.scaleMode = 'nearest'; this.fontes[lugar.folha] = fonte; }
+    else this.sujas.add(lugar.folha);
+    const it: Item = { folha: lugar.folha, x: lugar.x, y: lugar.y, w: tw, h: th, dx: x0 - ox, dy: y0 - oy };
+    this.itens.push(it);
+    this.quadros.push({ tex: new Texture({ source: fonte, frame: new Rectangle(it.x, it.y, it.w, it.h) }), dx: it.dx, dy: it.dy, w: it.w, h: it.h });
+    return id;
+  }
+
+  /** Sobe para a placa de vídeo as folhas que ganharam desenhos depois da carga (uma vez por lote). */
+  publicar(): void {
+    if (!this.sujas.size) return;
+    for (const k of this.sujas) this.fontes[k]?.update();
+    this.sujas.clear();
+  }
+
   /** Cria as texturas do PixiJS (uma fonte por folha, um recorte por quadro). */
   finalizar(): void {
     if (this.pronto) return;
     this.descarregar();
     const fontes = this.folhas.map((f) => Texture.from(f.c).source);
     for (const fo of fontes) fo.scaleMode = 'nearest';
+    this.fontes = fontes;
     this.quadros = this.itens.map((it) => {
       if (it.folha < 0) return { tex: Texture.EMPTY, dx: 0, dy: 0, w: 0, h: 0 };
       const tex = new Texture({ source: fontes[it.folha], frame: new Rectangle(it.x, it.y, it.w, it.h) });
@@ -182,6 +238,7 @@ export class Atlas {
     for (const q of this.quadros) if (q.tex !== Texture.EMPTY) q.tex.destroy(false);
     for (const fo of fontes) fo.destroy();
     for (const f of this.folhas) { f.c.width = 1; f.c.height = 1; }
-    this.folhas = []; this.itens = []; this.quadros = []; this.chaves.clear();
+    this.folhas = []; this.itens = []; this.quadros = []; this.chaves.clear(); this.fontes = []; this.sujas.clear();
+    if (this.rascTarde) { this.rascTarde.width = 1; this.rascTarde.height = 1; this.rascTarde = null; }
   }
 }

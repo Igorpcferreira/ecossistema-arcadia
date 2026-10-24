@@ -34,6 +34,8 @@ export interface ResultadoTema {
   salas?: { nome: string; i: number; j: number }[];
   /** Lugares preferidos das cápsulas de recarga dos bots (em ordem); sem eles, o gerador procura. */
   recargas?: [number, number][];
+  /** Terrenos de 2 por 2 para as cápsulas das salas (em ordem); sem eles, o gerador procura. */
+  vagas?: [number, number][];
 }
 
 export type Figurante = Omit<PersonagemPlanta, 'zona'> & { casa?: [number, number] };
@@ -204,7 +206,17 @@ const produtos: Fab = (z, o) => {
   const salas = o.salas.slice(0, lugares.length).map((nome, k) => ({ nome, i: z.i0 + lugares[k][0], j: z.j0 + lugares[k][1] }));
   poe('planta', 9, 9); poe('planta', 0, 9);
   if (o.cheio) { poe('caixas', 9, 1); poe('impressora3d', 3, 9); poe('holoPainel', 9, 4); }
-  return { objetos, postos: [], piso: 'produtos', salas, terreno: { i: z.i0 + 6, j: z.j0 + 5, w: 3, d: 3 }, passeio: [p(2, 4), p(5, 9)] };
+  // vagas das salas que chegarem depois (servidor): os lugares das cápsulas que sobraram e o terreno
+  const vagas = [...lugares.slice(salas.length), [6, 5] as [number, number]].map(([a, b]) => p(a, b));
+  return { objetos, postos: [], piso: 'produtos', salas, terreno: { i: z.i0 + 6, j: z.j0 + 5, w: 3, d: 3 }, passeio: [p(2, 4), p(5, 9)], vagas };
+};
+
+/** Lote sem ala (a configuração ainda não tem frente para ele): piso de depósito, caixas e plantas. */
+const livre: Fab = (z, o) => {
+  const { objetos, poe, p } = montador(z);
+  poe('caixas', 1, 1); poe('caixas', 2, 1); poe('planta', 9, 9, { s: 0.8 });
+  if (o.cheio) { poe('caixas', 1, 2); poe('luminaria', 0, 9); }
+  return { objetos, postos: [], piso: 'deposito', parede: '#2a2e40', passeio: [p(5, 5)] };
 };
 
 const cockpit: Fab = (z, o) => {
@@ -275,5 +287,5 @@ const bastidores: Fab = (z, o) => {
 };
 
 export const TEMAS: Record<Tema, Fab> = {
-  servidores, equipe, agencia, estudio, corporativo, nucleo, academia, lounge, recepcao, produtos, cockpit, laboratorio, pessoal, bastidores,
+  servidores, equipe, agencia, estudio, corporativo, nucleo, academia, lounge, recepcao, produtos, cockpit, laboratorio, pessoal, bastidores, livre,
 };

@@ -17,14 +17,35 @@ export interface AcoesHud {
   aquario(v: boolean): void;
   noite(): boolean;
   pausar(): boolean;
-  obra(): void;
-  /** Trabalho novo numa ala em espera (ela acorda). */
-  trabalho(): void;
+  /** Só no simulador: sala nova em obra. Sem ela, o botão some. */
+  obra?(): void;
+  /** Só no simulador: trabalho novo numa ala em espera (ela acorda). Sem ela, o botão some. */
+  trabalho?(): void;
   /** Troca entre o isométrico e o corte lateral; sem ela, o botão some. */
   vista?: () => void;
   zoom(delta: number, x?: number, y?: number): void;
   arrastar(dx: number, dy: number): void;
 }
+
+export interface ItemCartao { q?: string; texto: string; abrir?: { tipo: 'pessoa' | 'sala' | 'zona'; id: string } }
+/** Conteúdo de um cartão: título, linhas de definição e listas (itens podem abrir outro cartão). */
+export interface Cartao { titulo: string; sub: string; linhas: [string, string][]; listas: { titulo: string; itens: ItemCartao[] }[]; sprite?: boolean }
+
+/** Cartões e fila "precisa de você" com os dados do servidor; sem ela, valem os do simulador. */
+export interface FonteCartoes {
+  versao(): number;
+  precisa(): { p: Pessoa; texto: string }[];
+  cartaoPrecisa(): Cartao;
+  agente(p: Pessoa): Cartao | null;
+  zona(id: string): Cartao | null;
+  sala(chave: string): Cartao | null;
+  /** Sala (cápsula) num ladrilho, para o toque abrir o cartão dela. */
+  salaEm(i: number, j: number): string | null;
+}
+
+export type StatusFonte = 'conectando' | 'ao-vivo' | 'sem-conexao' | 'outra-aba' | 'simulado';
+
+type AlvoCartao = { k: 'pessoa'; p: Pessoa } | { k: 'zona'; id: string } | { k: 'sala'; id: string } | { k: 'precisa' } | null;
 
 const el = <K extends keyof HTMLElementTagNameMap>(tag: K, cls?: string, txt?: string): HTMLElementTagNameMap[K] => {
   const e = document.createElement(tag);
@@ -61,11 +82,20 @@ export class InterfaceMundo {
   private cartao: HTMLElement;
   private relogio: HTMLElement;
   private fps: HTMLElement;
+  /** Selo da fonte dos dados (ao vivo, sem conexão, outra aba, simulado) e o aviso de conexão perdida. */
+  private selo: HTMLElement;
+  private aviso: HTMLElement;
+  /** Aviso tocável de outra aba com a conexão: o toque traz esta aba de volta (nada volta sozinho). */
+  private outraAba: HTMLButtonElement;
+  private retomar: (() => void) | null = null;
+  private fonteCartoes: FonteCartoes | null = null;
+  private versaoPrecisa = -1;
+  private listaPrecisa: Pessoa[] = [];
   private debug: HTMLElement;
   private carga: HTMLElement;
   private botoes = new Map<string, HTMLButtonElement>();
   private elBalao = new Map<Pessoa, HTMLElement>();
-  private alvoCartao: Pessoa | string | null = null;
+  private alvoCartao: AlvoCartao = null;
   private m: Mundo | null = null;
   private vista: Vista | null = null;
   private cam: Camera | null = null;
@@ -89,7 +119,8 @@ export class InterfaceMundo {
     const topo = el('div', 'arc-hud-topo');
     const etiqueta = el('span', 'arc-etiqueta', 'ARCADIA ');
     this.relogio = el('span', 'num', '00:00'); this.fps = el('span', 'num', '-- fps');
-    etiqueta.append(this.relogio, this.fps);
+    this.selo = el('span', 'arc-selo'); this.selo.hidden = true;
+    etiqueta.append(this.relogio, this.fps, this.selo);
     const controles = el('div', 'arc-controles');
     const botao = (acao: string, txt: string, extra: { pressed?: boolean; label?: string; cls?: string } = {}) => {
       const b = el('button', 'arc-btn' + (extra.cls ? ' ' + extra.cls : ''), txt);
@@ -108,11 +139,17 @@ export class InterfaceMundo {
     botao('mais', '+', { label: 'Aproximar', cls: 'quad' });
     topo.append(etiqueta, controles);
     this.debug = el('div', 'arc-debug'); this.debug.hidden = true;
+    this.aviso = el('div', 'arc-aviso', 'Sem conexão com o servidor. O mundo volta sozinho.'); this.aviso.hidden = true;
+    this.aviso.setAttribute('role', 'status');
+    // o aviso comum não recebe toque (pointer-events: none); este recebe (.arc-aviso-toque em base.css)
+    this.outraAba = el('button', 'arc-aviso arc-aviso-toque', 'O Arcadia está aberto em outras abas deste aparelho. Toque aqui para voltar a esta.');
+    this.outraAba.type = 'button'; this.outraAba.hidden = true;
+    this.outraAba.addEventListener('click', () => this.retomar?.());
     const base = el('div', 'arc-hud-base');
     this.ticker = el('ol', 'arc-ticker'); this.ticker.setAttribute('aria-live', 'polite');
     this.precisa = el('button', 'arc-precisa', 'Precisa de você'); this.precisa.type = 'button'; this.precisa.hidden = true;
     base.append(this.ticker, this.precisa);
-    hud.append(topo, this.debug, base);
+    hud.append(topo, this.debug, this.aviso, this.outraAba, base);
     this.cartao = el('div', 'arc-cartao'); this.cartao.setAttribute('role', 'dialog'); this.cartao.hidden = true;
     this.carga = el('div', 'arc-carga', 'Montando o andar...');
     this.palco.append(this.canvas, this.baloes, hud, this.cartao, this.carga);
@@ -121,25 +158,44 @@ export class InterfaceMundo {
   }
 
   progresso(f: number, texto = 'Montando o andar'): void { this.carga.textContent = `${texto}... ${Math.round(f * 100)}%`; }
+
+  /**
+   * Selo da fonte dos dados; sem conexão, o aviso aparece e o mundo continua na tela. Em outra aba (o servidor deu a
+   * conexão a outra aba deste aparelho), o aviso é um botão: `retomar` traz esta aba de volta.
+   */
+  mostrarConexao(s: StatusFonte, retomar?: () => void): void {
+    if (retomar) this.retomar = retomar;
+    const txt = s === 'ao-vivo' ? 'AO VIVO' : s === 'sem-conexao' ? 'SEM CONEXÃO' : s === 'conectando' ? 'CONECTANDO' : s === 'outra-aba' ? 'OUTRA ABA' : 'SIMULADO';
+    this.selo.hidden = false;
+    if (this.selo.textContent !== txt) this.selo.textContent = txt;
+    this.selo.dataset.s = s;
+    const semConexao = s === 'sem-conexao';
+    if (this.aviso.hidden === semConexao) { this.aviso.hidden = !semConexao; this.evitarSujo = true; }
+    const outra = s === 'outra-aba';
+    if (this.outraAba.hidden === outra) { this.outraAba.hidden = !outra; this.evitarSujo = true; }
+  }
   pronto(): void { this.carga.hidden = true; }
   mostrarDebug(txt: string): void { this.debug.hidden = false; this.debug.textContent = txt; }
 
-  ligar(m: Mundo, vista: Vista, cam: Camera, acoes: AcoesHud, tam: Tam, maoFeita: PasseMao): void {
-    this.m = m; this.vista = vista; this.cam = cam; this.acoes = acoes; this.tam = tam; this.maoFeita = maoFeita;
+  ligar(m: Mundo, vista: Vista, cam: Camera, acoes: AcoesHud, tam: Tam, maoFeita: PasseMao, fonte: FonteCartoes | null = null): void {
+    this.m = m; this.vista = vista; this.cam = cam; this.acoes = acoes; this.tam = tam; this.maoFeita = maoFeita; this.fonteCartoes = fonte;
     m.ouvintes.anuncio = (a) => this.anunciar(a);
     for (const a of m.anuncios) this.anunciar(a);
     this.botoes.get('aquario')!.addEventListener('click', () => { const v = !cam.aquario; acoes.aquario(v); this.marcar('aquario', v); });
     this.botoes.get('noite')!.addEventListener('click', () => this.marcar('noite', acoes.noite()));
     this.botoes.get('pausa')!.addEventListener('click', () => this.marcar('pausa', acoes.pausar()));
-    this.botoes.get('obra')!.addEventListener('click', () => acoes.obra());
-    this.botoes.get('trabalho')!.addEventListener('click', () => acoes.trabalho());
+    const bObra = this.botoes.get('obra')!, bTrabalho = this.botoes.get('trabalho')!;
+    if (acoes.obra) { const f = acoes.obra; bObra.addEventListener('click', () => f()); } else bObra.hidden = true;
+    if (acoes.trabalho) { const f = acoes.trabalho; bTrabalho.addEventListener('click', () => f()); } else bTrabalho.hidden = true;
     const bVista = this.botoes.get('vista')!;
     if (acoes.vista) { const trocar = acoes.vista; bVista.addEventListener('click', () => trocar()); } else bVista.hidden = true;
     this.botoes.get('mais')!.addEventListener('click', () => acoes.zoom(1));
     this.botoes.get('menos')!.addEventListener('click', () => acoes.zoom(-1));
     this.precisa.addEventListener('click', () => {
-      const a = m.pessoas.find((x) => x.estado === 'esperando' && x.visivel);
-      if (a) { const p = vista.pontoBalao(a); if (p) { cam.explorar(); cam.irPara(p[0], p[1] + 20); this.marcar('aquario', false); } this.abrirPessoa(a); }
+      // com o servidor: o cartão da fila inteira, e a câmera no pedido mais antigo
+      const a = fonte ? fonte.precisa().map((x) => x.p).find((x) => x.visivel) : m.pessoas.find((x) => x.estado === 'esperando' && x.visivel);
+      if (a) { const p = vista.pontoBalao(a); if (p) { cam.explorar(); cam.irPara(p[0], p[1] + 20); this.marcar('aquario', false); } }
+      if (fonte) this.abrirPrecisa(); else if (a) this.abrirPessoa(a);
     });
     this.ligarEntrada();
     this.intervalo = window.setInterval(() => this.segundo(), 1000);
@@ -153,8 +209,19 @@ export class InterfaceMundo {
     this.relogio.textContent = this.horaFixa !== null ? `${String(this.horaFixa).padStart(2, '0')}:00` : `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
     if (!this.m) return;
     for (const li of Array.from(this.ticker.children) as HTMLElement[]) { const q = li.querySelector('.quando'); if (q) q.textContent = this.quandoFoi(Number(li.dataset.t)); }
-    if (this.alvoCartao instanceof Object && 'id' in (this.alvoCartao as object)) this.preencherPessoa(this.alvoCartao as Pessoa);
-    else if (typeof this.alvoCartao === 'string') this.abrirZona(this.alvoCartao);
+    // balões de quem saiu do mundo
+    for (const [p, e] of this.elBalao) if (this.m.porId.get(p.id) !== p) { e.remove(); this.elBalao.delete(p); this.posBalao.delete(e); }
+    this.renovarCartao();
+  }
+
+  /** Redesenha o cartão aberto (os tempos andam e os dados mudam). */
+  private renovarCartao(): void {
+    const a = this.alvoCartao;
+    if (!a) return;
+    if (a.k === 'pessoa') { if (this.m && this.m.porId.get(a.p.id) !== a.p) { this.fecharCartao(); return; } this.preencherPessoa(a.p); }
+    else if (a.k === 'zona') this.abrirZona(a.id);
+    else if (a.k === 'sala') this.abrirSala(a.id);
+    else this.abrirPrecisa();
   }
 
   /** O palco mudou de tamanho: mede de novo o que os balões evitam. */
@@ -201,7 +268,7 @@ export class InterfaceMundo {
     };
     this.larguraPalco = p.width; this.alturaPalco = p.height;
     const topo = this.raiz.querySelector('.arc-hud-topo') as HTMLElement | null;
-    this.evitar = [rel(this.ticker), rel(this.precisa)].filter((x): x is Ret => !!x);
+    this.evitar = [rel(this.ticker), rel(this.precisa), rel(this.outraAba)].filter((x): x is Ret => !!x);
     this.topoLivre = topo ? Math.max(8, topo.getBoundingClientRect().bottom - p.top + 6) : 44;
     this.evitarSujo = false;
   }
@@ -264,14 +331,74 @@ export class InterfaceMundo {
       postos.push(caixa());
       mostrados++;
     }
-    const esperando = m.pessoas.filter((a) => a.visivel && a.estado === 'esperando');
+    // "Precisa de você": com o servidor, a fila dele (o botão só aparece com alguém esperando)
+    const fonte = this.fonteCartoes;
+    if (fonte) { if (fonte.versao() !== this.versaoPrecisa) { this.versaoPrecisa = fonte.versao(); this.listaPrecisa = fonte.precisa().map((x) => x.p); } }
+    else this.listaPrecisa = m.pessoas.filter((a) => a.visivel && a.estado === 'esperando');
+    const esperando = this.listaPrecisa;
     if (this.precisa.hidden !== (esperando.length === 0)) { this.precisa.hidden = esperando.length === 0; this.evitarSujo = true; }
-    if (esperando.length) { const t = `Precisa de você: ${esperando.map((a) => a.curto).join(', ')}`; if (this.precisa.textContent !== t) { this.precisa.textContent = t; this.evitarSujo = true; } }
+    if (esperando.length) { const t = `Precisa de você: ${[...new Set(esperando.map((a) => a.curto))].join(', ')}`; if (this.precisa.textContent !== t) { this.precisa.textContent = t; this.evitarSujo = true; } }
   }
 
   /* ---------- cartões ---------- */
-  abrirPessoa(p: Pessoa): void { this.alvoCartao = p; this.preencherPessoa(p); this.cartao.hidden = false; }
+  abrirPessoa(p: Pessoa): void { this.alvoCartao = { k: 'pessoa', p }; this.preencherPessoa(p); this.cartao.hidden = false; }
   fecharCartao(): void { this.alvoCartao = null; this.cartao.hidden = true; }
+
+  abrirSala(id: string): void {
+    const c = this.fonteCartoes?.sala(id);
+    if (!c) { this.fecharCartao(); return; }
+    this.alvoCartao = { k: 'sala', id }; this.cartao.hidden = false;
+    this.desenharCartao(c, null);
+  }
+
+  abrirPrecisa(): void {
+    const f = this.fonteCartoes;
+    if (!f) return;
+    this.alvoCartao = { k: 'precisa' }; this.cartao.hidden = false;
+    this.desenharCartao(f.cartaoPrecisa(), null);
+  }
+
+  /** Abre o cartão pedido por um item de lista (pessoa, sala ou zona). */
+  private abrirItem(a: NonNullable<ItemCartao['abrir']>): void {
+    if (a.tipo === 'sala') { this.abrirSala(a.id); return; }
+    if (a.tipo === 'zona') { this.abrirZona(a.id); return; }
+    const p = this.m?.porId.get(a.id);
+    if (!p) return;
+    const pt = p.visivel ? this.vista?.pontoBalao(p) : null;
+    if (pt && this.cam) { this.cam.explorar(); this.cam.irPara(pt[0], pt[1] + 20); this.marcar('aquario', false); }
+    this.abrirPessoa(p);
+  }
+
+  /** Cartão a partir dos dados (servidor): título, linhas e listas com itens que abrem outro cartão. */
+  private desenharCartao(c: Cartao, p: Pessoa | null): void {
+    const dl = el('dl');
+    for (const [k, v] of c.linhas) dl.append(el('dt', undefined, k), el('dd', undefined, v));
+    const partes: HTMLElement[] = [this.topoCartao(c.titulo, c.sub, c.sprite && p ? this.miniatura(p) : null), dl];
+    for (const lista of c.listas) {
+      partes.push(el('span', 'sub', lista.titulo));
+      const ol = el('ol');
+      for (const it of lista.itens.slice(0, 10)) {
+        const li = el('li');
+        if (it.q !== undefined) li.append(el('span', 'q', it.q));
+        if (it.abrir) { const b = el('button', 'arc-link', it.texto); b.type = 'button'; const alvo = it.abrir; b.addEventListener('click', () => this.abrirItem(alvo)); li.append(b); }
+        else li.append(el('span', undefined, it.texto));
+        ol.append(li);
+      }
+      partes.push(ol);
+    }
+    this.cartao.replaceChildren(...partes);
+  }
+
+  private miniatura(p: Pessoa): HTMLCanvasElement | null {
+    const ap = p.ap;
+    if (!ap) return null;
+    const cv = el('canvas'); cv.width = this.tam; cv.height = this.tam === 24 ? 40 : 32;
+    ampliarCanvas(cv, 2);
+    const ant = paletaAtual(); usarPaleta('fria');
+    desenharPersonagem(cv.getContext('2d')!, ap, 'parado', 0, false, this.tam, this.maoFeita);
+    usarPaleta(ant);
+    return cv;
+  }
 
   private topoCartao(titulo: string, sub: string, sprite: HTMLCanvasElement | null): HTMLElement {
     const topo = el('div', 'arc-cartao-topo');
@@ -285,6 +412,8 @@ export class InterfaceMundo {
 
   private preencherPessoa(p: Pessoa): void {
     const m = this.m!;
+    const dados = this.fonteCartoes?.agente(p);
+    if (dados) { this.desenharCartao(dados, p); return; }
     const ap = p.ap;
     let cv: HTMLCanvasElement | null = null;
     if (ap) {
@@ -307,7 +436,9 @@ export class InterfaceMundo {
   abrirZona(id: string): void {
     const m = this.m!;
     const z = m.zonaPorId.get(id); if (!z) return;
-    this.alvoCartao = id; this.cartao.hidden = false;
+    this.alvoCartao = { k: 'zona', id }; this.cartao.hidden = false;
+    const dados = this.fonteCartoes?.zona(id);
+    if (dados) { this.desenharCartao(dados, null); return; }
     const presentes = m.pessoas.filter((a) => a.visivel && m.zonaEm(Math.floor(a.pi), Math.floor(a.pj)) === z);
     const ativos = presentes.filter((a) => !a.naRecarga && a.estado !== 'ocioso' && a.estado !== 'dormindo').length;
     const dl = el('dl');
@@ -390,7 +521,9 @@ export class InterfaceMundo {
     const [x0, y0] = cam.origem();
     const wx = x0 + ((cx - r.left) * dpr) / cam.escala, wy = y0 + ((cy - r.top) * dpr) / cam.escala;
     const alvo = vista.tocar(wx, wy);
+    const sala = !alvo?.pessoa && alvo?.ladrilho && this.fonteCartoes ? this.fonteCartoes.salaEm(alvo.ladrilho[0], alvo.ladrilho[1]) : null;
     if (alvo?.pessoa) this.abrirPessoa(alvo.pessoa);
+    else if (sala) this.abrirSala(sala);
     else if (alvo?.zona) this.abrirZona(alvo.zona);
     else this.fecharCartao();
   }

@@ -236,10 +236,14 @@ test('activity estranha não vai crua para o doctor; quadro que quebra quem trat
     const texto = a.diagnostico().linhas.join('\n');
     assert.ok(!texto.includes('fulano') && !texto.includes('estranho'), texto);
     assert.match(texto, /\(sem tipo\) 1/);
+    // O snapshot do falso acompanha cada quadro: o snapshot que o adaptador pede depois da falha (em 5 s) não traz
+    // de volta o estado antigo, mesmo com a máquina carregada e a espera lenta.
     falhar = true;
+    omb.definirBots([{ id: 'bot-w', threadId: 'th-w', name: 'W', activity: 'working', tasks: [] }]);
     omb.enviar({ kind: 'bot', bot: { id: 'bot-w', threadId: 'th-w', name: 'W', activity: 'working', tasks: [] } });
     await esperarAte(() => (a.diagnostico().contadores['quadrosComFalha'] ?? 0) === 1);
     falhar = false;
+    omb.definirBots([{ id: 'bot-w', threadId: 'th-w', name: 'W', activity: 'idle', tasks: [] }]);
     omb.enviar({ kind: 'bot', bot: { id: 'bot-w', threadId: 'th-w', name: 'W', activity: 'idle', tasks: [] } });
     await esperarAte(() => emitidos.some((e) => (e.evento as ArcadiaEvent).presenca?.estado === 'ocioso' && emitidos.indexOf(e) > 0));
     assert.equal(a.conectado(), true, 'o fluxo seguiu depois do quadro com defeito');

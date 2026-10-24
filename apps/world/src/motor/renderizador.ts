@@ -3,7 +3,11 @@
 // sem coleta de lixo de texturas (as texturas são fixas), WebGL por padrão e o renderizador
 // Canvas do próprio PixiJS quando o WebGL não existe ou roda por software (SwiftShader,
 // llvmpipe). ?motor=webgl ou ?motor=canvas força a escolha.
+// O módulo pixi.js/unsafe-eval troca as funções que o PixiJS geraria na hora (new Function) por
+// versões prontas: o mundo roda com a CSP do servidor sem 'unsafe-eval'.
+import 'pixi.js/unsafe-eval';
 import { autoDetectRenderer, Ticker, type Renderer } from 'pixi.js';
+import { recarregarQuandoResponder } from '../fonte/conexao.ts';
 
 export interface InfoGpu { webgl: boolean; gpu: string | null; software: boolean }
 export interface InfoMotor extends InfoGpu { nome: 'webgl' | 'canvas'; motivo: string }
@@ -58,8 +62,9 @@ export async function criarRenderizador(canvas: HTMLCanvasElement, forcar: 'webg
   Ticker.system.stop();
   const real = r.name === 'canvas' ? 'canvas' : 'webgl';
   if (real !== nome) motivo += `; o PixiJS caiu para ${real}`;
-  // perda de contexto WebGL de verdade: recarrega a página (o estado vem de novo do simulador ou do servidor)
-  const perdeu = (e: Event) => { e.preventDefault(); setTimeout(() => location.reload(), 300); };
+  // perda de contexto WebGL de verdade: recarrega a página (o estado vem de novo do simulador ou do servidor), mas só
+  // quando ela responder: com o servidor fora, recarregar deixaria a página de erro do navegador para sempre
+  const perdeu = (e: Event) => { e.preventDefault(); setTimeout(() => void recarregarQuandoResponder(), 300); };
   if (real === 'webgl') canvas.addEventListener('webglcontextlost', perdeu, { once: true });
   return { r, info: { ...gpu, nome: real, motivo }, desligar: () => canvas.removeEventListener('webglcontextlost', perdeu) };
 }

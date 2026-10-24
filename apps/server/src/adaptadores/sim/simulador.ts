@@ -1,10 +1,10 @@
 // Simulador determinístico: mesma semente e mesmo início dão exatamente os mesmos eventos.
 // Serve para desenvolver, testar e demonstrar sem nenhuma fonte ligada. Nomes, salas e equipes são inventados e
 // genéricos; as alas vêm da configuração (sem ala, a sala vai para a Recepção).
-import type { ArcadiaEvent, CategoriaFerramenta, Motor, TipoAgente, TipoEspera, TipoSala } from '@arcadia/shared';
+import type { ArcadiaEvent, CategoriaFerramenta, EstadoAgente, Motor, TipoAgente, TipoEspera, TipoSala } from '@arcadia/shared';
 import type { Relogio, Agendamento } from '../../util/relogio.ts';
 
-export const CENARIOS = ['dia-normal', 'pico', 'falhas', 'esperando-voce', '30-agentes', 'sala-nova', 'visitante'] as const;
+export const CENARIOS = ['dia-normal', 'pico', 'falhas', 'esperando-voce', '30-agentes', 'sala-nova', 'visitante', 'estados'] as const;
 export type Cenario = (typeof CENARIOS)[number];
 
 export const DESCRICAO_CENARIO: Record<Cenario, string> = {
@@ -15,6 +15,7 @@ export const DESCRICAO_CENARIO: Record<Cenario, string> = {
   '30-agentes': 'trinta agentes em doze salas',
   'sala-nova': 'projeto novo vira sala com obra; outro cai na Recepção e depois é classificado',
   visitante: 'sessões que chegam pelo teletransporte, trabalham com subagente e vão embora',
+  estados: 'todos os estados da seção 4.3, um de cada vez, numa ordem fixa e documentada (portão G3)',
 };
 
 export const DURACAO_PADRAO_MS: Record<Cenario, number> = {
@@ -25,6 +26,7 @@ export const DURACAO_PADRAO_MS: Record<Cenario, number> = {
   '30-agentes': 20 * 60_000,
   'sala-nova': 10 * 60_000,
   visitante: 10 * 60_000,
+  estados: 225_000,
 };
 
 export type OpcoesCenario = {
@@ -296,6 +298,177 @@ function rotina(
   }
 }
 
+/** Agentes do cenário "estados" (chaves fixas, para o G3 achar cada um). */
+export const AGENTES_ESTADOS = {
+  sessao: 'sim:estados-sessao',
+  subagente: 'sim:estados-sessao:sub-1',
+  coordenacao: 'sim:estados-bot-1',
+  colega: 'sim:estados-bot-2',
+  suporte: 'sim:estados-bot-3',
+  pioneira: 'sim:estados-pioneira',
+} as const;
+
+export type PassoEstados = {
+  /** Segundos desde o começo da rodada, na velocidade 1. */
+  t: number;
+  /** Chave do agente (ver AGENTES_ESTADOS). */
+  agente: string;
+  /** Estado que o agente mostra a partir deste instante; "fora" é quando ele some do mundo. */
+  estado: EstadoAgente | 'fora';
+  /** O que conferir no mundo neste passo. */
+  conferir: string;
+  /** Só com o ócio curto da configuração de teste (pausa em 15 s, sono em 30 s); com o padrão, o estado anterior fica. */
+  ocioCurto?: true;
+};
+
+const S = AGENTES_ESTADOS.sessao;
+const SA = AGENTES_ESTADOS.subagente;
+const B1 = AGENTES_ESTADOS.coordenacao;
+const B2 = AGENTES_ESTADOS.colega;
+const B3 = AGENTES_ESTADOS.suporte;
+const P = AGENTES_ESTADOS.pioneira;
+
+/**
+ * Roteiro do cenário "estados", na ordem: cada estado da seção 4.3 (e talvez esperando, saindo, pausa e sono) fica
+ * alguns segundos, um de cada vez. Os tempos e a ordem são fixos; a semente só troca enfeites (nome do arquivo e
+ * título da delegação). Feito para a velocidade 1: os timers do motor (chegada, texto, talvez, pausa, sono) não
+ * aceleram. Cada rodada dura 225 s e abre uma sala nova.
+ */
+export const ROTEIRO_ESTADOS: readonly PassoEstados[] = [
+  { t: 5, agente: S, estado: 'chegando', conferir: 'a sessão chega pelo teletransporte e anda até a Sala dos Estados' },
+  { t: 15, agente: S, estado: 'ocioso', conferir: 'parada, sem atividade (a chegada fecha sozinha em 10 s)' },
+  { t: 19, agente: S, estado: 'pensando', conferir: 'pedido do humano: olhos para cima, três pontos' },
+  { t: 25, agente: S, estado: 'lendo', conferir: 'Read: olhos para baixo, holograma de texto, nome curto do arquivo' },
+  { t: 31, agente: S, estado: 'editando', conferir: 'Edit: digitando, holograma de código' },
+  { t: 37, agente: S, estado: 'comando', conferir: 'Bash: terminal verde' },
+  { t: 43, agente: S, estado: 'delegando', conferir: 'Task: a sessão manda um subagente' },
+  { t: 44, agente: SA, estado: 'pensando', conferir: 'o subagente nasce (minidrone) na sala da sessão' },
+  { t: 45, agente: SA, estado: 'lendo', conferir: 'o subagente lê dois arquivos' },
+  { t: 52, agente: SA, estado: 'pensando', conferir: 'o subagente fecha o trabalho' },
+  { t: 53, agente: SA, estado: 'saindo', conferir: 'o subagente entrega para a sessão e vai embora' },
+  { t: 53.5, agente: S, estado: 'pensando', conferir: 'a sessão recebe a entrega do subagente' },
+  { t: 55, agente: S, estado: 'trabalhando', conferir: 'ferramenta de outro tipo, que não devolve resultado' },
+  { t: 62, agente: S, estado: 'talvez-esperando', conferir: '7 s sem resultado e sem sinal exato: talvez esperando (não é o âmbar)' },
+  { t: 63, agente: SA, estado: 'fora', conferir: 'o subagente some do mundo' },
+  { t: 68, agente: S, estado: 'pensando', conferir: 'a ferramenta devolveu o resultado' },
+  { t: 70, agente: S, estado: 'comando', conferir: 'Bash que vai pedir permissão' },
+  { t: 71, agente: S, estado: 'esperando', conferir: 'esperando você: olhos "! !", coluna âmbar, item na fila "Precisa de você"' },
+  { t: 79, agente: S, estado: 'comando', conferir: 'espera resolvida: drone verde leva o check e a fila esvazia' },
+  { t: 80, agente: S, estado: 'pensando', conferir: 'o comando terminou' },
+  { t: 82, agente: S, estado: 'comando', conferir: 'outro Bash' },
+  { t: 83, agente: S, estado: 'erro', conferir: 'a ferramenta falhou: olhos "X X", fumaça, contador de erros' },
+  { t: 89, agente: S, estado: 'pensando', conferir: 'resposta só de texto: o turno fecha sozinho em 5 s' },
+  { t: 94, agente: S, estado: 'entregou', conferir: 'confete, drone com pacote até o Núcleo, contador de entregas' },
+  { t: 100, agente: B1, estado: 'pensando', conferir: 'o bot de coordenação começa um turno no QG' },
+  { t: 102, agente: B1, estado: 'delegando', conferir: 'delegação entre bots: drone com envelope até o colega' },
+  { t: 104, agente: S, estado: 'pausa', conferir: 'a sessão vai à academia ou ao lounge', ocioCurto: true },
+  { t: 105, agente: B2, estado: 'pensando', conferir: 'o colega recebe a delegação (com o título da tarefa)' },
+  { t: 106, agente: B2, estado: 'lendo', conferir: 'o colega lê' },
+  { t: 110, agente: B2, estado: 'editando', conferir: 'o colega edita' },
+  { t: 114, agente: B2, estado: 'pensando', conferir: 'o colega fecha o trabalho' },
+  { t: 115.2, agente: B2, estado: 'entregou', conferir: 'o colega entrega e a delegação some' },
+  { t: 116, agente: B1, estado: 'pensando', conferir: 'o drone volta com a conclusão' },
+  { t: 117, agente: B1, estado: 'entregou', conferir: 'o bot de coordenação entrega' },
+  { t: 119, agente: S, estado: 'dormindo', conferir: 'a sessão dorme', ocioCurto: true },
+  { t: 125, agente: B3, estado: 'na-fila', conferir: 'bot na fila: espera na recepção' },
+  { t: 130.2, agente: B2, estado: 'pausa', conferir: 'o colega vai descansar', ocioCurto: true },
+  { t: 132, agente: B1, estado: 'pausa', conferir: 'o bot de coordenação vai descansar', ocioCurto: true },
+  { t: 133, agente: B3, estado: 'sem-sinal', conferir: 'sem sinal: congelado e translúcido' },
+  { t: 141, agente: B3, estado: 'limite', conferir: 'limite de uso: apagão na ala do motor' },
+  { t: 145.2, agente: B2, estado: 'dormindo', conferir: 'o colega dorme', ocioCurto: true },
+  { t: 147, agente: B1, estado: 'dormindo', conferir: 'o bot de coordenação dorme', ocioCurto: true },
+  { t: 149, agente: B3, estado: 'ocioso', conferir: 'o limite passou' },
+  { t: 155, agente: P, estado: 'chegando', conferir: 'sala nova nascendo: obra por 60 s, e a pioneira chega nela' },
+  { t: 156, agente: B3, estado: 'pausa', conferir: 'o bot de suporte vai descansar', ocioCurto: true },
+  { t: 165, agente: P, estado: 'ocioso', conferir: 'a pioneira espera a obra' },
+  { t: 170, agente: P, estado: 'pausa', conferir: 'a pioneira vai descansar', ocioCurto: true },
+  { t: 171, agente: B3, estado: 'dormindo', conferir: 'o bot de suporte dorme', ocioCurto: true },
+  { t: 175, agente: S, estado: 'saindo', conferir: 'a sessão termina e sai pelo teletransporte' },
+  { t: 185, agente: S, estado: 'fora', conferir: 'a sessão some do mundo' },
+  { t: 185, agente: P, estado: 'dormindo', conferir: 'a pioneira dorme', ocioCurto: true },
+  { t: 195, agente: P, estado: 'saindo', conferir: 'a pioneira termina e sai' },
+  { t: 205, agente: P, estado: 'fora', conferir: 'a pioneira some do mundo (a sala fica)' },
+];
+
+/** Monta os eventos do cenário "estados" (tempos em segundos desde o início da rodada; ver ROTEIRO_ESTADOS). */
+function cenarioEstados(r: Roteiro, inicio: number, alas: string[], rodada: number): void {
+  const em = (s: number) => inicio + s * 1000;
+  const ala = (i: number) => alas[Math.min(i, alas.length - 1)];
+  const comAla = (s: SalaSim, a: string | undefined): SalaSim => (a !== undefined ? { ...s, ala: a } : s);
+  const salaDosEstados = comAla({ chave: 'sim-estados-sala', nome: 'Sala dos Estados', tipo: 'web' }, ala(0));
+  const qg = comAla({ chave: 'sim-estados-qg', nome: 'QG dos Estados', tipo: 'outro' }, ala(1));
+  // Uma sala nova por rodada (o início entra na chave: religar o simulador também abre uma obra).
+  const obra = comAla({ chave: `sim-estados-obra-${inicio.toString(36)}`, nome: `Obra Nova ${rodada + 1}`, tipo: 'app' }, ala(2));
+  const equipe = EQUIPES[0] ?? 'Equipe';
+  const bot = (chave: string, i: number, cargo: string): Persona => ({
+    chave, tipo: 'bot', motor: 'claude', nome: `Unidade ${LETRAS[i] ?? 'Z'}1`, cargo, cor: CORES[i] ?? 'blue', corpo: CORPOS[i * 3] ?? 'cursor', equipe, sala: qg,
+  });
+  const s: Persona = { chave: S, tipo: 'sessao', motor: 'claude', sala: salaDosEstados };
+  const sa: Persona = { chave: SA, tipo: 'subagente', motor: 'claude', paiChave: S, sala: salaDosEstados };
+  const b1 = bot(B1, 0, 'Coordenação');
+  const b2 = bot(B2, 1, 'Código');
+  const b3 = bot(B3, 2, 'Suporte');
+  const p: Persona = { chave: P, tipo: 'sessao', motor: 'codex', sala: obra };
+  const ferr = (nome: string, categoria: CategoriaFerramenta, id: string, alvo?: string) => (alvo !== undefined ? { nome, categoria, id, alvo } : { nome, categoria, id });
+  const fim = (nome: string, categoria: CategoriaFerramenta, id: string, ok = true) => ({ ferramenta: { nome, categoria, id, ok } });
+  const id = (n: string) => `e${rodada}-${n}`;
+
+  // Sessão: chegada, os estados de trabalho, o subagente, talvez esperando, esperando você, erro e entrega.
+  r.add(em(5), s, 'sessao.inicio', {}, true);
+  r.add(em(19), s, 'pedido.humano', { tarefa: { titulo: 'Conferir os estados um por um' } }, true);
+  r.add(em(25), s, 'ferramenta.inicio', { ferramenta: ferr('Read', 'ler', id('ler'), r.escolher(ARQUIVOS)) });
+  // A próxima ferramenta começa antes da anterior acabar: o estado visível segue a mais nova, sem piscar.
+  r.add(em(31), s, 'ferramenta.inicio', { ferramenta: ferr('Edit', 'editar', id('editar'), r.escolher(ARQUIVOS)) }, true);
+  r.add(em(31.1), s, 'ferramenta.fim', fim('Read', 'ler', id('ler')));
+  r.add(em(37), s, 'ferramenta.inicio', { ferramenta: ferr('Bash', 'comando', id('comando')) });
+  r.add(em(37.1), s, 'ferramenta.fim', fim('Edit', 'editar', id('editar')));
+  r.add(em(43), s, 'ferramenta.inicio', { ferramenta: ferr('Task', 'delegar', id('task')) });
+  r.add(em(43.1), s, 'ferramenta.fim', fim('Bash', 'comando', id('comando')));
+  r.add(em(44), sa, 'subagente.inicio');
+  r.add(em(45), sa, 'ferramenta.inicio', { ferramenta: ferr('Grep', 'ler', id('sub-1'), r.escolher(ARQUIVOS)) });
+  r.add(em(49), sa, 'ferramenta.inicio', { ferramenta: ferr('Read', 'ler', id('sub-2'), r.escolher(ARQUIVOS)) });
+  r.add(em(49.1), sa, 'ferramenta.fim', fim('Grep', 'ler', id('sub-1')));
+  r.add(em(52), sa, 'ferramenta.fim', fim('Read', 'ler', id('sub-2')));
+  r.add(em(53), sa, 'subagente.fim');
+  r.add(em(53.5), s, 'ferramenta.fim', fim('Task', 'delegar', id('task')));
+  r.add(em(55), s, 'ferramenta.inicio', { ferramenta: ferr('TodoWrite', 'outro', id('outro')) });
+  r.add(em(68), s, 'ferramenta.fim', fim('TodoWrite', 'outro', id('outro')));
+  r.add(em(70), s, 'ferramenta.inicio', { ferramenta: ferr('Bash', 'comando', id('permissao')) });
+  r.add(em(71), s, 'espera.inicio', { espera: { tipo: 'permissao' } });
+  r.add(em(79), s, 'espera.fim');
+  r.add(em(80), s, 'ferramenta.fim', fim('Bash', 'comando', id('permissao')));
+  r.add(em(82), s, 'ferramenta.inicio', { ferramenta: ferr('Bash', 'comando', id('falha')) });
+  r.add(em(83), s, 'ferramenta.erro', fim('Bash', 'comando', id('falha'), false));
+  r.add(em(89), s, 'pensando', { turno: { texto: true } });
+  r.add(em(175), s, 'sessao.fim');
+
+  // Delegação entre bots, no QG.
+  const job = `sim-estados-job-${inicio.toString(36)}`;
+  const titulo = r.escolher(TITULOS);
+  r.add(em(100), b1, 'turno.inicio', { tarefa: { titulo: 'Distribuir o trabalho' } }, true);
+  r.add(em(102), b1, 'ferramenta.inicio', { ferramenta: ferr('coordinate_bots', 'delegar', id('coordenar')) });
+  r.add(em(102.2), b1, 'delegacao.enviada', { delegacao: { de: B1, para: B2, jobId: job, titulo, status: 'queued' } });
+  r.add(em(105), b2, 'delegacao.recebida', { delegacao: { de: B1, para: B2, jobId: job, titulo, status: 'running' }, tarefa: { titulo } }, true);
+  r.add(em(106), b2, 'ferramenta.inicio', { ferramenta: ferr('Read', 'ler', id('colega-ler'), r.escolher(ARQUIVOS)) });
+  r.add(em(110), b2, 'ferramenta.inicio', { ferramenta: ferr('Edit', 'editar', id('colega-editar'), r.escolher(ARQUIVOS)) }, true);
+  r.add(em(110.1), b2, 'ferramenta.fim', fim('Read', 'ler', id('colega-ler')));
+  r.add(em(114), b2, 'ferramenta.fim', fim('Edit', 'editar', id('colega-editar')));
+  r.add(em(115), b2, 'delegacao.concluida', { delegacao: { de: B1, para: B2, jobId: job, status: 'completed' } });
+  r.add(em(115.2), b2, 'turno.fim');
+  r.add(em(116), b1, 'ferramenta.fim', fim('coordinate_bots', 'delegar', id('coordenar')));
+  r.add(em(117), b1, 'turno.fim');
+
+  // Fila, sem sinal e limite de uso, num bot de suporte.
+  r.add(em(125), b3, 'presenca', { presenca: { estado: 'na-fila' } }, true);
+  r.add(em(133), b3, 'presenca', { presenca: { estado: 'sem-sinal' } }, true);
+  r.add(em(141), b3, 'limite', {}, true);
+  r.add(em(149), b3, 'presenca', { presenca: { estado: 'ocioso' } }, true);
+
+  // Sala nova: a pioneira chega numa pasta que o mundo ainda não conhecia.
+  r.add(em(155), p, 'sessao.inicio', {}, true);
+  r.add(em(195), p, 'sessao.fim');
+}
+
 export function gerarCenario(cenario: Cenario, opcoes: OpcoesCenario): ArcadiaEvent[] {
   const rodada = opcoes.rodada ?? 0;
   const inicio = opcoes.inicio;
@@ -419,6 +592,9 @@ export function gerarCenario(cenario: Cenario, opcoes: OpcoesCenario): ArcadiaEv
       r.add(Math.max(tc + 30_000, inicio + 8 * 60_000), codex, 'sessao.fim');
       break;
     }
+    case 'estados':
+      cenarioEstados(r, inicio, alas, rodada);
+      break;
   }
   return r.ordenados();
 }

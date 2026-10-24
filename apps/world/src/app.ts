@@ -1,5 +1,6 @@
-// Uma instância do mundo: cena gerada da planta, simulação, renderizador, vista, câmera,
-// laço e interface. A página do mundo cria uma; a página /prototipos cria uma ou duas.
+// Uma instância do mundo: cena gerada da planta, simulação (ou o coreógrafo, com os dados do
+// servidor), renderizador, vista, câmera, laço e interface. A página do mundo cria uma; a página
+// /prototipos cria uma ou duas, sempre com o simulador do navegador.
 import type { Renderer } from 'pixi.js';
 import type { PacotePersonagens, Planta } from './cena/formato.ts';
 import { gerarCena } from './cena/gerador.ts';
@@ -16,6 +17,10 @@ import { InterfaceMundo, horaSaoPaulo, type ModoHud } from './ui/interface.ts';
 import type { PasseMao, Tam } from './arte/personagens.ts';
 import { vestirDoDia, type ModoRoupa } from './cena/roupa.ts';
 import type { NomePaleta } from './arte/cor.ts';
+import type { Espelho } from './fonte/espelho.ts';
+import type { MapaPlanta } from './fonte/planta.ts';
+import { Coreografo } from './fonte/coreografo.ts';
+import { CartoesServidor } from './fonte/cartoes.ts';
 
 export interface OpcoesMundo {
   planta: Planta;
@@ -52,11 +57,18 @@ export interface OpcoesMundo {
   ocio?: 'real' | 'rapido';
   /** Movimento reduzido: a câmera corta em vez de deslizar e nada pisca. Padrão: a preferência do sistema. */
   movimento?: 'auto' | 'reduzido' | 'normal';
+  /**
+   * Dados do servidor (snapshot e SSE): o coreógrafo põe cada agente no lugar e o simulador fica
+   * só com a vida ambiente. `aoRemontar`: as alas mudaram e quem chamou monta o mundo de novo.
+   */
+  servidor?: { espelho: Espelho; mapa: MapaPlanta; aoRemontar: () => void };
 }
 
 export interface InstanciaMundo {
   laco: Laco;
   sim: Simulador;
+  /** Só com o servidor. */
+  coreografo: Coreografo | null;
   info: InfoMotor;
   preset: Preset;
   mundo: Mundo;
@@ -86,12 +98,20 @@ export async function criarMundo(raiz: HTMLElement, op: OpcoesMundo): Promise<In
   let noiteForcada: boolean | null = op.noite ?? null;
   const ehNoite = () => (noiteForcada ?? noitePeloRelogio());
   mundo.noite = ehNoite();
+  // com o servidor, salas, cápsulas e agentes entram antes de a vista assar o atlas
+  let sim: Simulador | null = null, cor: Coreografo | null = null;
+  if (op.servidor) {
+    sim = new Simulador(mundo);
+    cor = new Coreografo(mundo, op.servidor.espelho, op.servidor.mapa, sim);
+    cor.aoRemontar = op.servidor.aoRemontar;
+    cor.montar();
+  }
   // renderizador e vista
   const { r, info, desligar } = await criarRenderizador(ui.canvas, op.motor ?? null, mundo.noite ? 0x05060f : 0x9fd3ef);
   // sem placa de vídeo (WebGL por software), o renderizador Canvas vem junto com o preset baixo
   const preset = PRESETS[op.preset ?? (info.nome === 'canvas' && !op.motor ? 'baixo' : celular ? 'medio' : 'alto')];
   mundo.maxParticulas = preset.maxParticulas;
-  const opVista = { tam: op.tam, maoFeita: op.maoFeita, paleta: op.paleta, preset };
+  const opVista = { tam: op.tam, maoFeita: op.maoFeita, paleta: op.paleta, preset, placasGrandes: celular };
   const vista: Vista = op.vista === 'corte' ? new VistaCorte(mundo, r, opVista) : new VistaIso(mundo, r, opVista);
   await vista.preparar(async (f) => { ui.progresso(f); await new Promise((res) => setTimeout(res, 0)); });
   vista.definirNoite(mundo.noite);
@@ -115,7 +135,14 @@ export async function criarMundo(raiz: HTMLElement, op: OpcoesMundo): Promise<In
   };
   ajustarTela();
   const inicial = (op.foco && vista.alvos.alvoZona(op.foco)) || vista.alvos.alvoZona(cena.zonas.find((z) => z.tema === 'cockpit')?.id ?? cena.zonas[0].id);
-  if (inicial) cam.irPara(inicial[0] - (op.foco ? 0 : 40), inicial[1] - (op.foco ? 0 : 4), true);
+  if (inicial && op.foco) cam.irPara(inicial[0], inicial[1], true);
+  else if (inicial) {
+    // tela em pé (celular): o Cockpit no meio e a câmera sobe até o chão encher a parte de baixo da tela,
+    // sem o Cockpit sair de vista; tela deitada: como sempre, um pouco à esquerda do Cockpit
+    const fundo = cam.vh > cam.vw ? vista.alvos.fundoEm?.(inicial[0]) : undefined;
+    if (fundo === undefined) cam.irPara(inicial[0] - 40, inicial[1] - 4, true);
+    else cam.irPara(inicial[0], Math.max(inicial[1] - cam.vh / 2 + 60, Math.min(inicial[1], fundo + 24 - cam.vh / 2)), true);
+  }
   cam.aquario = op.aquario ?? true;
   cam.travada = op.aquario === false;
   cam.aguardarPlano(7);
@@ -127,15 +154,15 @@ export async function criarMundo(raiz: HTMLElement, op: OpcoesMundo): Promise<In
   };
   aplicarMovimento();
   mqReduzir?.addEventListener?.('change', aplicarMovimento);
-  // simulação
-  const sim = new Simulador(mundo);
-  estadoInicial(mundo);
+  // simulação (sem servidor, o simulador do navegador faz tudo)
+  if (!sim) { sim = new Simulador(mundo); estadoInicial(mundo); }
+  const simulador = sim;
   // laço
   const teto = op.teto ?? (celular ? 30 : 60);
   let ultimoFps = 0;
   const laco = new Laco({
     teto, passoSim: 1 / 60,
-    simular: (dt) => sim.passo(dt),
+    simular: (dt) => (cor ? cor.passo(dt) : simulador.passo(dt)),
     quadro: (dt) => {
       cam.dirigir(dt);
       const a = performance.now();
@@ -158,11 +185,11 @@ export async function criarMundo(raiz: HTMLElement, op: OpcoesMundo): Promise<In
     aquario: (v) => cam.ligarAquario(v),
     noite: () => { noiteForcada = !mundo.noite; mundo.noite = noiteForcada; vista.definirNoite(mundo.noite); return mundo.noite; },
     pausar: () => { laco.pausado = !laco.pausado; return laco.pausado; },
-    obra: () => {
-      if (mundo.obra.fase === 'vazio') sim.construirAgora();
+    obra: cor ? undefined : () => {
+      if (mundo.obra.fase === 'vazio') simulador.construirAgora();
       else { const tr = cena.pontos.terreno; if (tr) { const p = vista.alvos.alvoZona(tr.zona); if (p) { cam.explorar(); cam.irPara(p[0], p[1]); } } }
     },
-    trabalho: () => { sim.chegarTrabalho(); if (!cam.aquario) { cam.ligarAquario(true); ui.marcar('aquario', true); } },
+    trabalho: cor ? undefined : () => { simulador.chegarTrabalho(); if (!cam.aquario) { cam.ligarAquario(true); ui.marcar('aquario', true); } },
     vista: op.trocarVista,
     zoom: (delta, px, py) => {
       const antes = cam.escala;
@@ -177,7 +204,8 @@ export async function criarMundo(raiz: HTMLElement, op: OpcoesMundo): Promise<In
       cam.ax = cam.x; cam.ay = cam.y; cam.limitar(); cam.explorar();
     },
     arrastar: (dx, dy) => { const dpr = window.devicePixelRatio || 1; cam.x -= (dx * dpr) / cam.escala; cam.y -= (dy * dpr) / cam.escala; cam.ax = cam.x; cam.ay = cam.y; cam.limitar(); cam.explorar(); },
-  }, op.tam, op.maoFeita);
+  }, op.tam, op.maoFeita, cor && op.servidor ? new CartoesServidor(op.servidor.espelho, cor) : null);
+  ui.mostrarConexao(cor ? 'conectando' : 'simulado');
   const ro = new ResizeObserver(() => { ajustarTela(); ui.redimensionou(); });
   ro.observe(palco);
   ui.pronto();
@@ -185,7 +213,7 @@ export async function criarMundo(raiz: HTMLElement, op: OpcoesMundo): Promise<In
   laco.iniciar();
   const tempoCargaMs = performance.now() - t0;
   const inst: InstanciaMundo = {
-    laco, sim, info, preset, mundo, vista, camera: cam, ui, tempoCargaMs,
+    laco, sim: simulador, coreografo: cor, info, preset, mundo, vista, camera: cam, ui, tempoCargaMs,
     interna: () => [cam.vw, cam.vh, cam.escala],
     destruir: () => {
       laco.destruir(); ro.disconnect(); clearInterval(relogioNoite);
@@ -195,6 +223,6 @@ export async function criarMundo(raiz: HTMLElement, op: OpcoesMundo): Promise<In
       vista.destruir(); (r as Renderer).destroy(); ui.destruir();
     },
   };
-  if (op.expor) (window as unknown as { __arcadia: unknown }).__arcadia = { inst, laco, medidas: laco.medidas, registro: laco.registro, info, preset: preset.nome, tempoCargaMs, interna: inst.interna, vista: vista.medidas };
+  if (op.expor) (window as unknown as { __arcadia: unknown }).__arcadia = { inst, laco, medidas: laco.medidas, registro: laco.registro, info, preset: preset.nome, tempoCargaMs, interna: inst.interna, vista: vista.medidas, coreografo: cor };
   return inst;
 }

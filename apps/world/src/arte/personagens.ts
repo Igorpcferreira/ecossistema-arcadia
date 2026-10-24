@@ -480,7 +480,15 @@ function tronco24Androide(R: Ret, ap: AparenciaAndroide, a: ReturnType<typeof co
   if (acc === 'gravatinha') { R(9, Y(18), 2, 2, '#c0304a'); R(13, Y(18), 2, 2, '#c0304a'); R(11, Y(18), 2, 1, '#8a1f34'); }
   if (acc === 'brilho') { R(8, Y(23), 1, 1, '#ffd9c7'); R(7, Y(24), 3, 1, '#ffd9c7'); R(8, Y(25), 1, 1, '#ffd9c7'); R(8, Y(24), 1, 1, '#ffffff'); }
   if (ap.casco) R(7, Y(25), 10, 1, '#14161f');
+  // corpo do mascote (bots do OpenMausBot): emblema de 3 por 3 na barriga, num tom claro da cor do bot
+  if (ap.corpo) { const b = EMBLEMA_CORPO[ap.corpo] ?? EMBLEMA_CORPO.cursor; for (let k = 0; k < 9; k++) if (b[k] === '1') R(13 + (k % 3), Y(24 + Math.floor(k / 3)), 1, 1, tom(ap.papel, 0.55)); }
 }
+
+/** Emblema de cada corpo de mascote (3 por 3, linha a linha). */
+const EMBLEMA_CORPO: Record<string, string> = {
+  cursor: '100110111', blob: '011111110', circle: '111101111', squircle: '111111111', capsule: '010010010',
+  drop: '010111111', shield: '111111010', hexagon: '010101010', diamond: '010111010', star: '101010101',
+};
 
 function cabecaHumano24(R: Ret, g: G, H: AparenciaHumano, costas: boolean, Y: (y: number) => number, piscando: boolean): void {
   const pele = H.pele, ps = H.peleSombra;

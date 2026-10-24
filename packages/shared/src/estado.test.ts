@@ -1,7 +1,7 @@
 // Testes do esquema do estado e do protocolo de transmissão. Dados inventados.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { EsquemaEstadoMundo, EsquemaMudanca, EsquemaQuadro, EsquemaSnapshot, type EstadoMundo } from './estado.ts';
+import { EsquemaEstadoMundo, EsquemaMudanca, EsquemaQuadro, EsquemaSnapshot, TEMAS_ALA, type EstadoMundo } from './estado.ts';
 
 export function estadoExemplo(): EstadoMundo {
   return {
@@ -60,4 +60,16 @@ test('snapshot, quadro e mudanças', () => {
   assert.ok(EsquemaMudanca.safeParse({ k: 'agente.saiu', chave: 'sim:a1' }).success);
   assert.equal(EsquemaMudanca.safeParse({ k: 'desconhecida' }).success, false);
   assert.ok(EsquemaQuadro.safeParse({ seq: 8, ts: 2, mudancas: [{ k: 'obra.fim', salaChave: 'sala-alfa' }] }).success);
+});
+
+test('tema da ala: opcional, só da lista (a mesma da configuração e do mundo)', () => {
+  assert.deepEqual([...TEMAS_ALA], ['equipe', 'agencia', 'estudio', 'corporativo', 'laboratorio', 'pessoal', 'bastidores', 'produtos', 'academia']);
+  const e = estadoExemplo();
+  for (const tema of TEMAS_ALA) {
+    const com = { ...e, alas: { ...e.alas, produtos: { ...(e.alas['produtos'] as NonNullable<EstadoMundo['alas'][string]>), tema } } };
+    assert.ok(EsquemaEstadoMundo.safeParse(com).success, tema);
+  }
+  const fora = { ...e, alas: { ...e.alas, produtos: { ...(e.alas['produtos'] as object), tema: 'castelo' } } };
+  assert.equal(EsquemaEstadoMundo.safeParse(fora).success, false, 'tema fora da lista é recusado');
+  assert.ok(EsquemaEstadoMundo.safeParse(e).success, 'sem tema continua valendo');
 });

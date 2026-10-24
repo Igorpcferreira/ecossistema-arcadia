@@ -2,7 +2,7 @@
 // CenaDados completa (zonas, objetos, pontos, janelas, letreiros e linhas de dados).
 // Determinístico: a mesma planta com as mesmas opções gera sempre a mesma cena.
 import type {
-  Aparencia, CenaDados, DecoParede, Janela, Letreiro, Linha, Objeto, Personagem, Planta, Sala, Spot, Tapete, Tema, Zona,
+  Aparencia, CenaDados, DecoParede, Janela, Letreiro, Linha, Objeto, Personagem, Planta, PostoCena, Sala, Spot, Tapete, Tema, Zona,
 } from './formato.ts';
 import { TEMAS, type Posto } from './temas.ts';
 import { tom } from '../arte/cor.ts';
@@ -51,9 +51,10 @@ export function gerarCena(planta: Planta, op: OpcoesGerador): CenaDados {
   const decoracoes: DecoParede[] = [];
   const postosPorZona = new Map<string, { posto: Posto; global?: number; ocupado: boolean }[]>();
   const recargasPorZona = new Map<string, [number, number][]>();
+  const vagasDoTema = new Map<string, [number, number][]>();
   const pontos: CenaDados['pontos'] = { nucleo: [0, 0], teletransporte: [0, 0], recepcao: [0, 0], fila: [], treinos: [], pausas: [], passeio: [] };
   const figurantes: Personagem[] = [];
-  let temNucleo = false;
+  let temNucleo = false, temTele = false, temRecepcao = false;
 
   for (const lote of planta.lotes) {
     const cols = lote.cols ?? 1, lins = lote.lins ?? 1;
@@ -90,10 +91,11 @@ export function gerarCena(planta: Planta, op: OpcoesGerador): CenaDados {
       objetos.push({ tipo: 'pod', i: s.i, j: s.j, props: { nome: s.nome, sala: id } });
     }
     if (r.recargas) recargasPorZona.set(z.id, r.recargas);
+    if (r.vagas) vagasDoTema.set(z.id, r.vagas);
     postosPorZona.set(z.id, r.postos.map((posto) => ({ posto, global: posto.mesa !== undefined ? mapa.get(posto.mesa) : undefined, ocupado: false })));
     if (r.nucleo) { pontos.nucleo = r.nucleo; temNucleo = true; }
-    if (r.teletransporte) pontos.teletransporte = r.teletransporte;
-    if (r.recepcao) pontos.recepcao = r.recepcao;
+    if (r.teletransporte) { pontos.teletransporte = r.teletransporte; temTele = true; }
+    if (r.recepcao) { pontos.recepcao = r.recepcao; temRecepcao = true; }
     if (r.fila) pontos.fila.push(...r.fila);
     if (r.terreno && !pontos.terreno) pontos.terreno = { ...r.terreno, zona: z.id };
     if (r.treinos) pontos.treinos.push(...r.treinos);
@@ -153,7 +155,8 @@ export function gerarCena(planta: Planta, op: OpcoesGerador): CenaDados {
   for (const p of personagens) marcar(p.casa[0], p.casa[1]);
   for (const s of [...pontos.treinos, ...pontos.pausas]) marcar(s.t[0], s.t[1]);
   for (const f of pontos.fila) marcar(f[0], f[1]);
-  marcar(pontos.teletransporte[0] - 1, pontos.teletransporte[1] - 1, 2, 2);
+  // sem recepção no andar (a sonda de um lote só, por exemplo), os pontos dela ficam em (0, 0) e não ocupam nada
+  if (temTele) marcar(pontos.teletransporte[0] - 1, pontos.teletransporte[1] - 1, 2, 2);
   for (const p of personagens) {
     if (p.tipoAgente !== 'bot') continue;
     const z = zonaPorId.get(p.zona)!;
@@ -171,6 +174,9 @@ export function gerarCena(planta: Planta, op: OpcoesGerador): CenaDados {
     const ap = planta.aparencias[p.aparencia];
     objetos.push({ tipo: 'recarga', i: lugar[0], j: lugar[1], props: { dono: p.id, cor: ap?.tipo === 'androide' ? ap.papel : '#3ee0ff' } });
   }
+
+  /* ---------- vagas para quem nasce depois (os dados do servidor) ---------- */
+  const { postos, vagasPod, vagasRecarga } = vagasDasZonas(zonas, postosPorZona, personagens, recargasPorZona, vagasDoTema, ocupado, marcar, pontos, temRecepcao);
 
   /* ---------- paredes: janelas, letreiros e decorações ---------- */
   const janelas: Janela[] = [];
@@ -211,7 +217,90 @@ export function gerarCena(planta: Planta, op: OpcoesGerador): CenaDados {
     versao: 1, nome: planta.nome, andar: { ni, nj, parede: planta.parede },
     zonas, salas, objetos, personagens, aparencias: { ...planta.aparencias }, janelas, letreiros, decoracoes, linhas, tapetes,
     pontos, textos: planta.textos, roteiro, ocio: { ...(planta.ocio ?? OCIO_PADRAO) }, agenda: [...(planta.agenda ?? [])].sort((a, b) => a.t - b.t),
+    postos, vagasPod, vagasRecarga,
   };
+}
+
+/**
+ * Vagas de cada zona para o que chega depois da carga: os postos do tema (mesas), as cápsulas
+ * das salas (terrenos de 2 por 2 com passagem), lugares em pé para quem não tiver mesa e as
+ * cápsulas de recarga dos bots. Tudo em ordem fixa: a mesma planta dá sempre as mesmas vagas.
+ */
+function vagasDasZonas(
+  zonas: Zona[], postosPorZona: Map<string, { posto: Posto; global?: number; ocupado: boolean }[]>, personagens: Personagem[],
+  recargasPorZona: Map<string, [number, number][]>, vagasDoTema: Map<string, [number, number][]>, ocupado: Set<string>,
+  marcar: (i: number, j: number, w?: number, d?: number) => void, pontos: CenaDados['pontos'], temRecepcao: boolean,
+): Pick<CenaDados, 'postos' | 'vagasPod' | 'vagasRecarga'> {
+  const postos: CenaDados['postos'] = {}, vagasPod: CenaDados['vagasPod'] = {}, vagasRecarga: CenaDados['vagasRecarga'] = {};
+  const chave = (i: number, j: number) => `${i},${j}`;
+  // os postos do tema e o balcão da recepção não recebem nada por cima
+  const casaDe = new Map(personagens.map((p) => [chave(p.casa[0], p.casa[1]), p.id]));
+  for (const lista of postosPorZona.values()) for (const x of lista) marcar(x.posto.casa[0], x.posto.casa[1]);
+  if (temRecepcao) marcar(pontos.recepcao[0], pontos.recepcao[1]);
+  // perto de um posto ou de um ponto de treino, pausa e fila, nada de cápsula (fica a passagem)
+  const perto = new Set<string>();
+  const cercar = (i: number, j: number) => { for (const [a, b] of [[0, 0], [1, 0], [-1, 0], [0, 1], [0, -1]] as const) perto.add(chave(i + a, j + b)); };
+  for (const lista of postosPorZona.values()) for (const x of lista) cercar(x.posto.casa[0], x.posto.casa[1]);
+  for (const s of [...pontos.treinos, ...pontos.pausas]) cercar(s.t[0], s.t[1]);
+  for (const f of pontos.fila) cercar(f[0], f[1]);
+  for (const z of zonas) {
+    const dentro = (i: number, j: number) => i >= z.i0 && i <= z.i1 && j >= z.j0 && j <= z.j1;
+    const livre = (i: number, j: number) => dentro(i, j) && !ocupado.has(chave(i, j));
+    postos[z.id] = (postosPorZona.get(z.id) ?? []).map((x) => {
+      const p: PostoCena = { casa: [x.posto.casa[0], x.posto.casa[1]], pose: x.posto.pose, tipo: 'mesa', mesa: x.global, papel: x.posto.papel };
+      const quem = casaDe.get(chave(x.posto.casa[0], x.posto.casa[1]));
+      if (quem) p.ocupadoPor = quem;
+      return p;
+    });
+    // cápsulas de sala: as do tema primeiro; depois, terrenos livres de 2 por 2 com um vizinho livre,
+    // do fundo para a frente, com um ladrilho de folga entre elas
+    const pods: [number, number][] = [];
+    const doTema = vagasDoTema.get(z.id);
+    if (doTema) for (const [i, j] of doTema) { if ([0, 1].every((a) => [0, 1].every((b) => livre(i + a, j + b)))) { pods.push([i, j]); marcar(i, j, 2, 2); } }
+    else if (z.tipo === 'ala' || z.tema === 'recepcao') {
+      const folga = new Set<string>();
+      for (let j = z.j0; j < z.j1 && pods.length < 6; j++) for (let i = z.i0; i < z.i1 && pods.length < 6; i++) {
+        const area = [[0, 0], [1, 0], [0, 1], [1, 1]].map(([a, b]) => [i + a, j + b] as const);
+        if (!area.every(([a, b]) => livre(a, b) && !perto.has(chave(a, b)) && !folga.has(chave(a, b)))) continue;
+        const vizinhos = [[i - 1, j], [i - 1, j + 1], [i + 2, j], [i + 2, j + 1], [i, j - 1], [i + 1, j - 1], [i, j + 2], [i + 1, j + 2]];
+        if (!vizinhos.some(([a, b]) => livre(a, b))) continue;
+        pods.push([i, j]); marcar(i, j, 2, 2);
+        for (let a = -1; a <= 2; a++) for (let b = -1; b <= 2; b++) folga.add(chave(i + a, j + b));
+      }
+    }
+    // perto da placa flutuante da zona, a placa da cápsula bateria nela: esses terrenos ficam por último
+    const pertoDaPlaca = ([i, j]: [number, number]) => !!z.placa && i <= z.i0 + 2 && j <= z.j0 + 1;
+    vagasPod[z.id] = [...pods.filter((v) => !pertoDaPlaca(v)), ...pods.filter(pertoDaPlaca)];
+    // lugares em pé: ladrilhos livres com os quatro vizinhos livres, a partir do meio da zona
+    const pe: [number, number][] = [];
+    const ci = (z.i0 + z.i1) / 2, cj = (z.j0 + z.j1) / 2;
+    const cands: [number, number][] = [];
+    for (let j = z.j0 + 1; j < z.j1; j++) for (let i = z.i0 + 1; i < z.i1; i++) cands.push([i, j]);
+    cands.sort((a, b) => (Math.abs(a[0] - ci) + Math.abs(a[1] - cj)) - (Math.abs(b[0] - ci) + Math.abs(b[1] - cj)) || a[1] - b[1] || a[0] - b[0]);
+    for (const [i, j] of cands) {
+      if (pe.length >= 6) break;
+      if (!livre(i, j) || perto.has(chave(i, j)) || ![[1, 0], [-1, 0], [0, 1], [0, -1]].every(([a, b]) => livre(i + a, j + b))) continue;
+      if (pe.some(([a, b]) => Math.max(Math.abs(a - i), Math.abs(b - j)) < 2)) continue;
+      pe.push([i, j]);
+    }
+    for (const [i, j] of pe) { marcar(i, j); postos[z.id].push({ casa: [i, j], pose: 'parado', tipo: 'pe' }); }
+    // cápsulas de recarga: os lugares do tema, a borda esquerda, a borda do fundo e o resto
+    const rec: [number, number][] = [];
+    if (z.tipo === 'ala' || z.tema === 'recepcao') {
+      const cr: [number, number][] = [...(recargasPorZona.get(z.id) ?? [])];
+      for (let j = z.j0 + 2; j < z.j1; j++) cr.push([z.i0, j]);
+      for (let i = z.i0 + 2; i < z.i1; i++) cr.push([i, z.j0]);
+      for (let j = z.j0 + 1; j < z.j1; j++) for (let i = z.i0 + 1; i < z.i1; i++) cr.push([i, j]);
+      for (const [i, j] of cr) {
+        if (rec.length >= 8) break;
+        if (!livre(i, j) || perto.has(chave(i, j)) || rec.some(([a, b]) => a === i && b === j)) continue;
+        if (!(livre(i + 1, j) || livre(i, j + 1))) continue;
+        rec.push([i, j]); marcar(i, j);
+      }
+    }
+    vagasRecarga[z.id] = rec;
+  }
+  return { postos, vagasPod, vagasRecarga };
 }
 
 /** Liga a mesa (ou console) ao personagem e escolhe os itens dela pelo acessório. */

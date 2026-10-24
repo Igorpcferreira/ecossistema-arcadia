@@ -22,6 +22,13 @@ const IdAla = z.string().regex(REGEX_ID_ALA);
 const Num = z.number().nonnegative();
 const Int = z.number().int().nonnegative();
 
+/**
+ * Temas de ala do mundo (o cenário do lote: móveis, objetos e cores). A configuração pode fixar o tema de uma ala;
+ * sem ele, o mundo escolhe pelo conteúdo. A mesma lista vale para a configuração do servidor e para a planta do mundo.
+ */
+export const TEMAS_ALA = ['equipe', 'agencia', 'estudio', 'corporativo', 'laboratorio', 'pessoal', 'bastidores', 'produtos', 'academia'] as const;
+export type TemaAla = (typeof TEMAS_ALA)[number];
+
 export const EsquemaAla = z.strictObject({
   id: IdAla,
   nome: z.string().max(LIMITES.sala),
@@ -30,6 +37,8 @@ export const EsquemaAla = z.strictObject({
   ordem: Int,
   lote: z.strictObject({ col: Int, lin: Int }),
   tipo: z.enum(['projetos', 'recepcao']),
+  /** Tema fixado na configuração (`alas[].tema`). Vem só da configuração, em memória: o banco não guarda. */
+  tema: z.enum(TEMAS_ALA).optional(),
   /** Falso quando a ala saiu da configuração: ela continua no andar, porque salas nunca somem. */
   ativa: z.boolean(),
   criadaEm: Num,
@@ -223,6 +232,20 @@ export const EsquemaResync = z.strictObject({
   seq: Int,
 });
 export type Resync = z.infer<typeof EsquemaResync>;
+
+/**
+ * Motivos do `event: adeus`: a última mensagem de uma conexão SSE que o servidor encerra para abrir vaga a outra.
+ * `outra-aba`: o mesmo endereço abriu mais conexões que o teto dele (a mais nova ganha). `muitas-conexoes`: o teto
+ * total encheu e esta era a mais antiga do endereço com mais conexões.
+ */
+export const MOTIVOS_ADEUS = ['outra-aba', 'muitas-conexoes'] as const;
+export type MotivoAdeus = (typeof MOTIVOS_ADEUS)[number];
+
+/** `event: adeus`: o servidor vai fechar esta conexão de propósito. O cliente não reconecta sozinho (nada de laço). */
+export const EsquemaAdeus = z.strictObject({
+  motivo: z.enum(MOTIVOS_ADEUS),
+});
+export type Adeus = z.infer<typeof EsquemaAdeus>;
 
 /** Tipos de evento do SSE. `ping` vem a cada 15 s, sem `id`. */
 export const EVENTOS_SSE = ['ola', 'mundo', 'resync', 'ping'] as const;

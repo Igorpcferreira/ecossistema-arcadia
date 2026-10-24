@@ -1,7 +1,8 @@
 // Carga da cena: a planta de exemplo do repositório, o pacote de personagens de exemplo
-// (config/personagens.exemplo.json) e, só em desenvolvimento, os arquivos locais servidos pelo
-// Vite a partir de docs/local (cenário real e personagens pessoais). Sem os locais, tudo cai no
-// genérico. Nada local entra no build.
+// (config/personagens.exemplo.json) e os arquivos locais, que só o próprio PC recebe: em
+// desenvolvimento, o Vite serve os dois de docs/local (cenário e personagens); com o servidor do
+// Arcadia, o pacote de personagens vem dele (que só entrega ao próprio PC). Sem os locais, tudo cai
+// no genérico. Nada local entra no build.
 import type { Aparencia, PacotePersonagens, Planta } from './formato.ts';
 import { PLANTA_EXEMPLO } from './exemplo.ts';
 import pacoteExemplo from '../../../../config/personagens.exemplo.json';
@@ -19,10 +20,13 @@ async function buscarJson<T>(url: string): Promise<T | null> {
 export interface CargaLocal { planta: Planta; pacote: PacotePersonagens; origem: { cenario: 'local' | 'exemplo'; personagens: 'local' | 'exemplo' } }
 
 /** Carrega a planta e o pacote. ?local=0 força o genérico mesmo em desenvolvimento. */
-export async function carregarCena(usarLocal: boolean): Promise<CargaLocal> {
+export async function carregarCena(usarLocal: boolean, servidor = false): Promise<CargaLocal> {
   let planta: Planta | null = null, pacote: PacotePersonagens | null = null;
-  if (usarLocal && import.meta.env.DEV) {
-    [planta, pacote] = await Promise.all([buscarJson<Planta>('/local/cenario-local.json'), buscarJson<PacotePersonagens>('/local/personagens.json')]);
+  if (usarLocal && (import.meta.env.DEV || servidor)) {
+    [planta, pacote] = await Promise.all([
+      import.meta.env.DEV ? buscarJson<Planta>('/local/cenario-local.json') : Promise.resolve(null),
+      buscarJson<PacotePersonagens>('/local/personagens.json'),
+    ]);
     if (planta && (!Array.isArray(planta.lotes) || !Array.isArray(planta.personagens))) planta = null;
     if (pacote && !Array.isArray(pacote.personagens)) pacote = null;
   }

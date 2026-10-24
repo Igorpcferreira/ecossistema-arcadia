@@ -90,7 +90,8 @@ export async function iniciarOmbFalso(op: { environmentId: string; versao: strin
   };
 }
 
-export async function esperarAte(condicao: () => boolean, limiteMs = 4_000): Promise<void> {
+/** Espera a condição. O limite é folgado: a suíte roda os arquivos em paralelo, e sob carga a conexão demora mais. */
+export async function esperarAte(condicao: () => boolean, limiteMs = 10_000): Promise<void> {
   const fim = Date.now() + limiteMs;
   while (Date.now() < fim) {
     if (condicao()) return;

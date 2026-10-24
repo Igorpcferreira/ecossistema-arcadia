@@ -1,8 +1,9 @@
 // Testes do carregador de configuração. Caminhos e nomes inventados.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import path from 'node:path';
-import { CONFIG_EXEMPLO, ErroConfig, carregarConfig, localizarConfig, validarConfig } from './carregar.ts';
+import { CONFIG_EXEMPLO, ErroConfig, arquivoDoPacoteLocal, carregarConfig, localizarConfig, pastaDeDados, validarConfig } from './carregar.ts';
 import type { AmbienteCaminhos } from '../util/caminhos.ts';
 import { load as lerYaml } from 'js-yaml';
 
@@ -37,9 +38,8 @@ salas:
   pastasAgregadoras: ["~/projetos"]
 `;
 
-test('o exemplo do repositório carrega sem avisos, com a visualização em 127.0.0.1', () => {
-  const r = carregarConfig({ amb, argumento: CONFIG_EXEMPLO });
-  assert.equal(r.origem, 'argumento');
+test('o exemplo do repositório é válido e sem avisos, com a visualização em 127.0.0.1, mas não vale para rodar', () => {
+  const r = validarConfig(lerYaml(fs.readFileSync(CONFIG_EXEMPLO, 'utf8')), amb);
   assert.equal(r.config.servidor.ingestao.porta, 47800);
   assert.equal(r.config.servidor.visualizacao.host, '127.0.0.1');
   assert.equal(r.config.servidor.retencaoDias, 180);
@@ -47,6 +47,8 @@ test('o exemplo do repositório carrega sem avisos, com a visualização em 127.
   assert.deepEqual(r.avisos, []);
   assert.ok(r.config.salas.pastasDeApoio.includes('docs') && r.config.salas.pastasDeApoio.includes('node_modules'));
   assert.deepEqual(r.config.salas.rascunho, ['%TEMP%']);
+  // Ele aponta para a pasta de dados real: carregar para rodar é recusado, mesmo indicado de propósito.
+  assert.match(erros(() => carregarConfig({ amb, argumento: CONFIG_EXEMPLO })).join('\n'), /não vale como configuração de execução/);
 });
 
 test('pastas de apoio e de rascunho: padrão genérico, só nome de pasta no apoio, aviso para variável desconhecida', () => {
@@ -115,7 +117,7 @@ test('YAML quebrado diz linha e coluna', () => {
   assert.match(erros(() => carregarConfig({ amb, argumento: 'x.yaml', existe: () => true, ler: () => '  \n' })).join('\n'), /vazia/);
 });
 
-test('ordem de procura: --config, ARCADIA_CONFIG, pasta do usuário e exemplo', () => {
+test('ordem de procura: --config, ARCADIA_CONFIG e pasta do usuário; sem nenhuma, recusa (o exemplo nunca entra no lugar)', () => {
   const raizRepo = 'C:\\repo';
   const doUsuario = path.join(amb.casa, '.arcadia', 'arcadia.config.yaml');
   const existe = (p: string) => [doUsuario, path.resolve('C:\\repo', 'meu.yaml'), 'D:\\cfg\\outra.yaml'].includes(p);
@@ -123,9 +125,16 @@ test('ordem de procura: --config, ARCADIA_CONFIG, pasta do usuário e exemplo', 
   const comVariavel = { ...amb, variaveis: { ...amb.variaveis, ARCADIA_CONFIG: 'D:\\cfg\\outra.yaml' } };
   assert.equal(localizarConfig({ amb: comVariavel, raizRepo, existe }).origem, 'variavel');
   assert.deepEqual(localizarConfig({ amb, raizRepo, existe }), { arquivo: doUsuario, origem: 'usuario' });
-  const nada = localizarConfig({ amb, raizRepo, existe: () => false });
-  assert.equal(nada.origem, 'exemplo');
-  assert.ok(nada.arquivo.endsWith(path.join('config', 'arcadia.config.exemplo.yaml')));
+  const nada = erros(() => localizarConfig({ amb, raizRepo, existe: () => false })).join('\n');
+  assert.match(nada, /^Nenhuma configuração encontrada/);
+  assert.ok(nada.includes('%USERPROFILE%\\.arcadia\\arcadia.config.yaml') && nada.includes('--config'), nada);
+  // O exemplo do repositório não vale nem indicado de propósito: por --config (com outra caixa ou com ..) ou ARCADIA_CONFIG.
+  const sempre = () => true;
+  for (const argumento of ['config/arcadia.config.exemplo.yaml', 'C:\\REPO\\Config\\Arcadia.Config.Exemplo.yaml', 'C:\\repo\\config\\..\\config\\arcadia.config.exemplo.yaml']) {
+    assert.match(erros(() => localizarConfig({ amb, raizRepo, existe: sempre, argumento })).join('\n'), /não vale como configuração de execução/, argumento);
+  }
+  const variavelNoExemplo = { ...amb, variaveis: { ...amb.variaveis, ARCADIA_CONFIG: 'C:\\repo\\config\\arcadia.config.exemplo.yaml' } };
+  assert.match(erros(() => localizarConfig({ amb: variavelNoExemplo, raizRepo, existe: sempre })).join('\n'), /não vale como configuração de execução/);
   const msg = erros(() => localizarConfig({ amb, raizRepo, existe: () => false, argumento: 'C:\\Users\\teste\\sumiu.yaml' })).join('\n');
   assert.match(msg, /não existe: %USERPROFILE%\\sumiu\.yaml/);
   assert.ok(!msg.includes('C:\\Users\\teste'), 'a mensagem não mostra a pasta pessoal');
@@ -142,6 +151,52 @@ test('pasta de dados: falha fechada sem LOCALAPPDATA e nunca dentro das pastas d
   assert.match(erros(() => validarConfig({ versao: 1, servidor: { dados: '~/.codex/arcadia' } }, amb)).join('\n'), /servidor\.dados/);
 });
 
+test('pasta de dados de teste: subpasta de %TEMP% vale; a própria %TEMP%, outra pasta qualquer e a rede, não', () => {
+  for (const dados of ['%TEMP%/arcadia-fase3/dados', 'C:\\Users\\teste\\AppData\\Local\\Temp\\x', '%LOCALAPPDATA%/Arcadia/dados']) {
+    assert.doesNotThrow(() => validarConfig({ versao: 1, servidor: { dados } }, amb), dados);
+  }
+  for (const dados of ['%TEMP%', 'C:\\Users\\teste\\Documentos\\arcadia', 'D:\\dados', '\\\\servidor\\temp\\arcadia']) {
+    assert.match(erros(() => validarConfig({ versao: 1, servidor: { dados } }, amb)).join('\n'), /servidor\.dados: os dados do Arcadia ficam só dentro de %LOCALAPPDATA%\/Arcadia/, dados);
+  }
+  // %TEMP% apontando para a rede não abre exceção nenhuma.
+  const tempNaRede = { ...amb, variaveis: { ...amb.variaveis, TEMP: '\\\\servidor\\temp' } };
+  assert.match(erros(() => validarConfig({ versao: 1, servidor: { dados: '%TEMP%/arcadia' } }, tempNaRede)).join('\n'), /servidor\.dados/);
+});
+
+test('simulador nunca grava na pasta de dados real: com a configuração apontando para lá, vai para uma pasta própria na %TEMP%', () => {
+  const real = validarConfig({ versao: 1 }, amb).config;
+  assert.equal(pastaDeDados(real, amb, false), 'C:\\Users\\teste\\AppData\\Local\\Arcadia\\dados');
+  assert.equal(pastaDeDados(real, amb, true), 'C:\\Users\\teste\\AppData\\Local\\Temp\\arcadia-simulador');
+  const dentroDaReal = validarConfig({ versao: 1, servidor: { dados: '%LOCALAPPDATA%/Arcadia/outra' } }, amb).config;
+  assert.equal(pastaDeDados(dentroDaReal, amb, true), 'C:\\Users\\teste\\AppData\\Local\\Temp\\arcadia-simulador');
+  const deTeste = validarConfig({ versao: 1, servidor: { dados: '%TEMP%/arcadia-fase3/dados' } }, amb).config;
+  assert.equal(pastaDeDados(deTeste, amb, true), 'C:\\Users\\teste\\AppData\\Local\\Temp\\arcadia-fase3\\dados', 'configuração de teste fica como está');
+  assert.equal(pastaDeDados(deTeste, amb, false), 'C:\\Users\\teste\\AppData\\Local\\Temp\\arcadia-fase3\\dados');
+});
+
+test('pacote local: pasta ou arquivo .json, relativo à raiz do repositório; caminho de rede e variável desconhecida ficam de fora', () => {
+  const cfg = (pacoteLocal?: string) => validarConfig({ versao: 1, ...(pacoteLocal !== undefined ? { personagens: { pacoteLocal } } : {}) }, amb);
+  const raiz = 'C:\\repo';
+  assert.equal(arquivoDoPacoteLocal(cfg().config, amb, raiz), undefined);
+  assert.equal(arquivoDoPacoteLocal(cfg('  ').config, amb, raiz), undefined);
+  assert.equal(arquivoDoPacoteLocal(cfg('%USERPROFILE%/.arcadia/personagens').config, amb, raiz), 'C:\\Users\\teste\\.arcadia\\personagens\\personagens.json');
+  assert.equal(arquivoDoPacoteLocal(cfg('docs/local/fase3/personagens').config, amb, raiz), 'C:\\repo\\docs\\local\\fase3\\personagens\\personagens.json');
+  assert.equal(arquivoDoPacoteLocal(cfg('~/meus/pacote.json').config, amb, raiz), 'C:\\Users\\teste\\meus\\pacote.json');
+  assert.deepEqual(cfg('%USERPROFILE%/.arcadia/personagens').avisos, []);
+  const casos: [string, RegExp][] = [
+    // Host com o domínio reservado .invalid: mesmo que a guarda falhasse, nenhum nome resolveria na rede.
+    ['\\\\servidor.invalid\\pacotes', /^personagens\.pacoteLocal: caminho de rede não é lido/],
+    ['//servidor.invalid/pacotes/personagens.json', /^personagens\.pacoteLocal: caminho de rede não é lido/],
+    ['%NAO_EXISTE%/personagens', /^personagens\.pacoteLocal: usa variável de ambiente desconhecida/],
+  ];
+  for (const [valor, aviso] of casos) {
+    const r = cfg(valor);
+    assert.equal(arquivoDoPacoteLocal(r.config, amb, raiz), undefined, valor);
+    assert.ok(r.avisos.some((a) => aviso.test(a)), `${valor}: ${r.avisos.join('; ')}`);
+    assert.ok(!r.avisos.join('\n').includes('servidor') && !r.avisos.join('\n').includes('NAO_EXISTE'), 'o aviso não repete o caminho');
+  }
+});
+
 test('id de ala reservado (nome de propriedade do Object) é recusado', () => {
   const lista = erros(() => validarConfig({ versao: 1, alas: [{ id: 'constructor', nome: 'X', cor: '#000000' }] }, amb)).join('\n');
   assert.match(lista, /alas\[0\]\.id: "constructor" é um nome reservado/);
@@ -155,4 +210,16 @@ test('chave desconhecida que não é nome simples não se repete no aviso nem no
   const problema = erros(() => validarConfig({ versao: 1, salas: { apelidos: { 'C:/Users/teste/Clientes/Acme Ltda': 'x'.repeat(60) } } }, amb)).join('\n');
   assert.match(problema, /salas\.apelidos\.\[chave\]: pode ter no máximo 48/);
   assert.ok(!problema.includes('Acme Ltda'), problema);
+});
+
+test('tema da ala: opcional, da lista; tema desconhecido é erro com a lista', () => {
+  const ala = (extra: Record<string, unknown>) => ({ versao: 1, alas: [{ id: 'produtos', nome: 'Produtos', cor: '#c9a7ff', ...extra }] });
+  assert.equal(validarConfig(ala({}), amb).config.alas[0]?.tema, undefined);
+  for (const tema of ['equipe', 'agencia', 'estudio', 'corporativo', 'laboratorio', 'pessoal', 'bastidores', 'produtos', 'academia']) {
+    assert.equal(validarConfig(ala({ tema }), amb).config.alas[0]?.tema, tema);
+  }
+  const msg = erros(() => validarConfig(ala({ tema: 'castelo' }), amb)).join('\n');
+  assert.ok(msg.includes('alas[0].tema: tema desconhecido; use um destes: equipe, agencia, estudio, corporativo, laboratorio, pessoal, bastidores, produtos, academia'), msg);
+  assert.ok(!msg.includes('castelo'), 'o valor errado não se repete');
+  assert.match(erros(() => validarConfig(ala({ tema: 3 }), amb)).join('\n'), /alas\[0\]\.tema: tema desconhecido/);
 });

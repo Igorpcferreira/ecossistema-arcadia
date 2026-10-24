@@ -1,15 +1,16 @@
 # Próxima sessão
 
-Único roteiro vigente. Atualizado em 23/10/2026, no portão G1.
+Único roteiro vigente. Atualizado em 24/10/2026, na publicação da Fase 3.
 
-**Situação em 23/10/2026.** Nada das Fases 1 e 2 foi commitado ainda.
-- **Fase 1:** pronta para o portão G1. Os 17 problemas da revisão visual foram corrigidos e conferidos. As perguntas de gosto estão em `/prototipos` (`npm run dev:mundo`) e em `docs/local/fase1/capturas.html`.
+**Situação em 24/10/2026.** As Fases 1 e 2 foram publicadas em `main` (`5fdc06a`), com o ok do Igor. A Fase 3 passou no G3, com ressalvas que ficam para a Fase 4, e foi publicada em `main` no mesmo dia, também com o ok dele.
+- **Fase 1:** G1 feito em 23/10/2026. O Igor aceitou todas as recomendações, que agora são o padrão do mundo; as outras opções seguem em `/prototipos` (`npm run dev:mundo`).
 - **Fase 2:** marcos 1 a 5 feitos, com 240 testes, duas revisões de privacidade corrigidas e as regras de sala conferidas nos dados reais. Para o G2, falta ver com caso real a delegação e a ferramenta de bot do OpenMausBot.
+- **Fase 3:** o mundo lê o snapshot e o SSE do servidor (ADR 0004), e o servidor entrega o build. A revisão independente do G3 (24/10/2026) achou três falhas que barram o portão (academia, sala nova numa ala cheia e o corte com cápsula) e outros ajustes; o resumo está em `docs/estado-atual.md`. As correções ficaram prontas em 24/10/2026, com um campo `tema` por ala na config, e o servidor real já roda com elas. A segunda rodada da revisão, no mesmo dia, aprovou o G3 com ressalvas; o resumo está em `docs/estado-atual.md`. O Igor já vê o mundo no PC em `http://127.0.0.1:4780/`, servido pelo servidor.
 
 Próximos passos:
-1. Registrar as escolhas do G1 e deixá-las como padrão do mundo.
-2. Propor ao Igor o commit das Fases 1 e 2, revisando `git diff --cached` antes.
-3. Fechar o G2 quando aparecer um caso real de delegação do OpenMausBot (o servidor sobe com `npm run servidor -- --config <config real>`).
+1. Fechar o G2 quando aparecer um caso real de delegação do OpenMausBot (o servidor sobe com `npm run servidor -- --config <config real>`).
+2. Fase 4 (celular e rede, seção 6 do prompt), quando o Igor der o ok, com as ressalvas do G3: no aparelho real, fps, carga, remontagem do andar, aba em segundo plano, toque nos cartões e a recarga das 03:00; placas das cápsulas maiores ou mais claras no celular; balão sem cobrir o letreiro no corte; selo certo para a aba escondida que soltou a conexão; remontagem mais barata e medida de fps que atravesse a remontagem; testar o adeus por muitas conexões e o 403 de outro aparelho.
+3. Achar e dar folga aos testes sensíveis a tempo: em 23/10/2026, logo depois de religar o PC, 3 de 240 falharam uma vez e passaram nas 5 rodadas seguintes; em 24/10/2026, a varredura de 2 s de `apps/server/src/adaptadores/integracao.test.ts` falhou uma vez, logo depois das capturas com o Playwright, e passou nas 3 rodadas seguintes.
 
 As decisões abertas de salas e de config ficam em `docs/local/salas-reais.md`.
 

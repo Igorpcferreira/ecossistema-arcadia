@@ -1,6 +1,6 @@
 // Estado vivo do mundo: zonas, objetos, pessoas, drones, pulsos e partículas, construído a
-// partir da CenaDados. O simulador (ou, na Fase 3, os eventos do servidor) muda este estado;
-// as vistas (isométrica e corte lateral) só leem.
+// partir da CenaDados. O simulador do navegador ou o coreógrafo (snapshot e SSE do servidor)
+// muda este estado; as vistas (isométrica e corte lateral) só leem.
 // Alas em espera (stand-by): a sala dorme depois de `ocio.dormeMinutos` sem atividade (campos
 // `dormindo` e `ultimaAtividade`, como no servidor) e a ala fica em espera quando todas as salas
 // dela dormem e nenhum agente trabalha nela. A luz da ala (nivel) anda devagar para as vistas
@@ -30,9 +30,16 @@ export interface ObjRT extends CtxObjeto {
 }
 
 export interface Drone { origem: () => Ponto; destino: () => Ponto; k: number; dur: number; alt: number; cor: string; carga: Carga; x: number; y: number; z: number; feito: boolean }
-export interface Mini { x: number; y: number; cor: string; ate: number; pai: Pessoa }
+/** Minidrone de subagente ao lado do pai. Com `chave`, vem do servidor e some quando o subagente sai. */
+export interface Mini { x: number; y: number; cor: string; ate: number; pai: Pessoa; chave?: string; estado?: Estado; idx?: number }
+/** Obra de sala nova (andaime e drones) num terreno de 2 por 2; tempos em segundos da simulação. */
+export interface ObraRT { chave: string; i: number; j: number; zona: string; inicio: number; dur: number }
 export interface Pulso { pts: Ponto[]; seg: number[]; total: number; s: number; vel: number; cor: string; zona: string }
-export interface Particula { x: number; y: number; vx: number; vy: number; vida: number; max: number; cor: string; tam: number; g: number; tipo: 'px' | 'coracao' | 'z' }
+/**
+ * Partícula do efeito, em pixels do isométrico. `base`: o ponto do chão de onde ela saiu (e quem a soltou): o corte
+ * lateral desenha a partícula em volta desse ponto (o ponto do isométrico convertido sozinho caía em outro andar).
+ */
+export interface Particula { x: number; y: number; vx: number; vy: number; vida: number; max: number; cor: string; tam: number; g: number; tipo: 'px' | 'coracao' | 'z'; base?: { x: number; y: number; pessoa?: Pessoa } }
 /** Luz do mundo. `limiar`: em que ponto do acordar da ala ela acende (0 a 1). */
 export interface LuzRT { x: number; y: number; r: number; cor: string; int: number; neon?: boolean; onAir?: boolean; zona: string | null; limiar: number; recarga?: ObjRT }
 export interface Anuncio { quem: string; cor: string; texto: string; quando: number }
@@ -168,6 +175,8 @@ export class Pessoa {
 
 export interface EstadoGlobal {
   erroAte: number;
+  /** Erros do dia (com o servidor: metricas.erros; o Núcleo mostra embaixo das entregas). */
+  erros: number;
   teleAte: number;
   atividade: number;
   entregas: number;
@@ -194,8 +203,21 @@ export class Mundo {
   anuncios: Anuncio[] = [];
   relogio = { agora: 0 };
   tAnim = 0;
-  global: EstadoGlobal = { erroAte: 0, teleAte: 0, atividade: 0, entregas: 12, onAir: false, apagao: new Map(), faseRack: 0 };
+  global: EstadoGlobal = { erroAte: 0, erros: 0, teleAte: 0, atividade: 0, entregas: 12, onAir: false, apagao: new Map(), faseRack: 0 };
   obra = { fase: 'vazio' as 'vazio' | 'obra' | 'pronta', inicio: 0 };
+  /** Obras em andamento (as vistas desenham uma por terreno). */
+  obras: ObraRT[] = [];
+  /** Pontos de treino e de pausa ocupados (ou reservados por quem vai até eles). */
+  readonly vagas = new Set<string>();
+  /**
+   * Dados do servidor: dormir e acordar as salas é com ele (`sala.dormindo`); o mundo não
+   * conta o ócio sozinho nem acorda a sala porque alguém mudou de estado.
+   */
+  servidor = false;
+  /** Aparências que as vistas assam já na carga, mesmo sem ninguém usando ainda (as sessões do servidor). */
+  aparenciasPrevistas: string[] = [];
+  /** Quem espera você, do pedido mais antigo para o mais novo (dados do servidor); sem isso, vale o estado. */
+  urgentes: Pessoa[] | null = null;
   /** Foco do aquário: um ponto fixo ou alguém andando (a sessão que chega pelo teletransporte). */
   focoForcado: { x: number; y: number; ate: number; pessoa?: Pessoa } | null = null;
   noite = false;
@@ -209,6 +231,7 @@ export class Mundo {
   /** Estado de espera de cada zona (áreas comuns nunca entram em espera). */
   readonly estadoZona = new Map<string, EstadoZona>();
   readonly salasPorZona = new Map<string, Sala[]>();
+  readonly salaPorId = new Map<string, Sala>();
   /** Relógio de parede no início da simulação: `ultimaAtividade` fica em ms desde 1970, como no servidor. */
   readonly inicioEpoch: number;
   private trabalhoZona = new Set<string>();
@@ -235,6 +258,7 @@ export class Mundo {
     for (const s of cena.salas) {
       if (!s.ultimaAtividade) s.ultimaAtividade = inicioEpoch - (s.dormindo ? (30 + rs() * 450) * 60000 : rs() * 60000);
       const l = this.salasPorZona.get(s.zona) ?? []; l.push(s); this.salasPorZona.set(s.zona, l);
+      this.salaPorId.set(s.id, s);
     }
     for (const z of cena.zonas) {
       const linha = cena.linhas.find((l) => l.zona === z.id);
@@ -270,6 +294,7 @@ export class Mundo {
   adicionarSala(s: Sala): void {
     this.cena.salas.push(s);
     const l = this.salasPorZona.get(s.zona) ?? []; l.push(s); this.salasPorZona.set(s.zona, l);
+    this.salaPorId.set(s.id, s);
   }
 
   /** Atividade numa zona (um evento numa sala): as salas acordam e a ala sai da espera. */
@@ -277,7 +302,7 @@ export class Mundo {
     const salas = this.salasPorZona.get(zonaId);
     if (!salas) return;
     const agora = this.agoraEpoch();
-    for (const s of salas) { s.ultimaAtividade = agora; s.dormindo = false; }
+    if (!this.servidor) for (const s of salas) { s.ultimaAtividade = agora; s.dormindo = false; }
     const z = this.zonaPorId.get(zonaId), e = this.estadoZona.get(zonaId);
     if (z && e) this.reavaliarZona(z, e);
   }
@@ -299,7 +324,7 @@ export class Mundo {
     else if (!ativa) e.trabalhoDesde = -1;
     else {
       if (e.trabalhoDesde < 0) e.trabalhoDesde = agora;
-      const obraAqui = this.obra.fase === 'obra' && this.cena.pontos.terreno?.zona === z.id;
+      const obraAqui = this.obras.some((o) => o.zona === z.id);
       if (this.agenteDentro.has(z.id) || obraAqui || agora - e.trabalhoDesde >= FOLGA_CHEGADA) alvo = false;
     }
     if (alvo === e.espera) return;
@@ -316,11 +341,36 @@ export class Mundo {
     this.ouvintes.zona?.(z.id, !alvo);
   }
 
+  /** Põe cada ala direto no estado de agora (carga e resync do servidor): sem animação e sem anúncio. */
+  assentarZonas(): void {
+    this.contarPresencas();
+    for (const z of this.zonas) {
+      const e = this.estadoZona.get(z.id)!;
+      const salas = this.salasPorZona.get(z.id) ?? [];
+      e.espera = z.tipo === 'ala' && salas.length > 0 && salas.every((s) => s.dormindo) && !this.trabalhoZona.has(z.id);
+      e.nivel = e.espera ? 0 : 1; e.presenca = 0; e.mudouEm = -999; e.trabalhoDesde = -1;
+    }
+  }
+
   /** Um passo do ócio: salas dormem, alas entram e saem da espera, luzes andam. */
   atualizarOcio(dt: number): void {
     const agora = this.agoraEpoch(), dormeMs = this.cena.ocio.dormeMinutos * 60000;
-    for (const s of this.cena.salas) if (!s.dormindo && agora - s.ultimaAtividade >= dormeMs) s.dormindo = true;
-    // quem trabalha (por zona) e quem está acordado dentro de uma ala em espera (luz de presença)
+    if (!this.servidor) for (const s of this.cena.salas) if (!s.dormindo && agora - s.ultimaAtividade >= dormeMs) s.dormindo = true;
+    this.contarPresencas();
+    for (const z of this.zonas) {
+      const e = this.estadoZona.get(z.id)!;
+      if (z.tipo === 'ala') this.reavaliarZona(z, e);
+      const alvo = e.espera ? 0 : 1;
+      if (e.nivel < alvo) e.nivel = Math.min(1, e.nivel + dt / TEMPO_ACORDAR);
+      else if (e.nivel > alvo) e.nivel = Math.max(0, e.nivel - dt / TEMPO_APAGAR);
+      const pr = e.espera && this.presencaZona.has(z.id) ? 1 : 0;
+      if (e.presenca < pr) e.presenca = Math.min(1, e.presenca + dt / 0.7);
+      else if (e.presenca > pr) e.presenca = Math.max(0, e.presenca - dt / 1.2);
+    }
+  }
+
+  /** Quem trabalha (por zona), quem é da ala e está dentro dela, e quem está acordado numa ala em espera. */
+  private contarPresencas(): void {
     this.trabalhoZona.clear(); this.presencaZona.clear(); this.agenteDentro.clear();
     for (const p of this.pessoas) {
       if (!p.visivel) continue;
@@ -332,16 +382,6 @@ export class Mundo {
       }
       if (p.naRecarga || p.estado === 'dormindo' || p.def.papel === 'figurante') continue;
       if (z && this.estadoZona.get(z.id)?.espera) this.presencaZona.add(z.id);
-    }
-    for (const z of this.zonas) {
-      const e = this.estadoZona.get(z.id)!;
-      if (z.tipo === 'ala') this.reavaliarZona(z, e);
-      const alvo = e.espera ? 0 : 1;
-      if (e.nivel < alvo) e.nivel = Math.min(1, e.nivel + dt / TEMPO_ACORDAR);
-      else if (e.nivel > alvo) e.nivel = Math.max(0, e.nivel - dt / TEMPO_APAGAR);
-      const pr = e.espera && this.presencaZona.has(z.id) ? 1 : 0;
-      if (e.presenca < pr) e.presenca = Math.min(1, e.presenca + dt / 0.7);
-      else if (e.presenca > pr) e.presenca = Math.max(0, e.presenca - dt / 1.2);
     }
   }
 
@@ -374,6 +414,18 @@ export class Mundo {
     return p;
   }
 
+  /** Tira alguém do mundo (agente que saiu de vez): as vistas soltam os sprites no próximo quadro. */
+  removerPessoa(p: Pessoa): void {
+    const k = this.pessoas.indexOf(p);
+    if (k < 0) return;
+    this.pessoas.splice(k, 1);
+    if (this.porId.get(p.id) === p) this.porId.delete(p.id);
+    for (let i = this.minis.length - 1; i >= 0; i--) if (this.minis[i].pai === p) this.minis.splice(i, 1);
+    if (this.focoForcado?.pessoa === p) this.focoForcado = null;
+    for (const o of this.objetos) if (o.dono === p.id) o.dono = null;
+    this.versao++;
+  }
+
   montarLuzes(): void {
     const L: LuzRT[] = [];
     for (const o of this.objetos) {
@@ -403,7 +455,19 @@ export class Mundo {
     if (this.particulas.length >= this.maxParticulas) return;
     const r = this.rngFx;
     const vida = o.vida ?? 0.6 + r() * 0.6;
-    this.particulas.push({ x, y, vx: o.vx ?? -6 + r() * 12, vy: o.vy ?? -18 + r() * 12, vida, max: vida, cor: o.cor ?? '#ffffff', tam: o.tam ?? 1, g: o.g ?? 0, tipo: o.tipo ?? 'px' });
+    this.particulas.push({ x, y, vx: o.vx ?? -6 + r() * 12, vy: o.vy ?? -18 + r() * 12, vida, max: vida, cor: o.cor ?? '#ffffff', tam: o.tam ?? 1, g: o.g ?? 0, tipo: o.tipo ?? 'px', base: o.base });
+  }
+
+  /** Partícula que sai de alguém (fumaça, confete, Z, coração): no corte, ela fica em volta da pessoa. */
+  particulaDe(p: Pessoa, x: number, y: number, o: Partial<Particula> = {}): void {
+    const [bx, by] = this.geo.iso(p.pi, p.pj, p.z);
+    this.particula(x, y, { ...o, base: { x: bx, y: by, pessoa: p } });
+  }
+
+  /** Partícula que sai de um ponto do chão (i, j): teletransporte, obra, cápsula nova. */
+  particulaNoChao(i: number, j: number, x: number, y: number, o: Partial<Particula> = {}): void {
+    const [bx, by] = this.geo.iso(i, j);
+    this.particula(x, y, { ...o, base: { x: bx, y: by } });
   }
 
   lancarDrone(origem: () => Ponto, destino: () => Ponto, o: { dur?: number; alt?: number; cor?: string; carga?: Carga } = {}): Drone {
@@ -433,7 +497,7 @@ export class Mundo {
       const o = d.origem(), f = d.destino();
       const u = d.k * d.k * (3 - 2 * d.k);
       d.x = o[0] + (f[0] - o[0]) * u; d.y = o[1] + 30 + (f[1] - o[1]) * u; d.z = 30 + Math.sin(Math.PI * u) * d.alt;
-      if (this.rngFx() < 0.35) this.particula(d.x, d.y - d.z + 4, { cor: d.cor, vx: 0, vy: 4, vida: 0.4, tam: 1 });
+      if (this.rngFx() < 0.35) this.particula(d.x, d.y - d.z + 4, { cor: d.cor, vx: 0, vy: 4, vida: 0.4, tam: 1, base: { x: d.x, y: d.y } });
       if (d.k >= 1) { d.feito = true; this.drones.splice(i, 1); }
     }
     for (let i = this.pulsos.length - 1; i >= 0; i--) { const p = this.pulsos[i]; p.s += p.vel * dt; if (p.s > p.total) this.pulsos.splice(i, 1); }
@@ -441,7 +505,8 @@ export class Mundo {
     for (let i = this.minis.length - 1; i >= 0; i--) {
       const m = this.minis[i]; const [x, y] = this.topo(m.pai);
       const k = Math.min(1, dt * 3);
-      m.x += (x + 16 + Math.cos(this.tAnim * 2) * 6 - m.x) * k; m.y += (y - 6 - m.y) * k;
+      const n = m.idx ?? 0;
+      m.x += (x + 16 + n * 11 + Math.cos(this.tAnim * 2 + n) * 6 - m.x) * k; m.y += (y - 6 - n * 3 - m.y) * k;
       if (this.relogio.agora > m.ate) this.minis.splice(i, 1);
     }
     for (const [z, ate] of this.global.apagao) if (ate < this.relogio.agora) this.global.apagao.delete(z);

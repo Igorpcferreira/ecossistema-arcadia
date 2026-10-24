@@ -7,7 +7,7 @@
 import { Container, Matrix, Sprite, Texture, type Renderer } from 'pixi.js';
 import type { Mundo, ObjRT, Pessoa } from '../cena/mundo.ts';
 import { pontoNaLinha } from '../cena/mundo.ts';
-import type { Aparencia, Estado, Pose } from '../cena/formato.ts';
+import type { Aparencia, Estado, Pose, Zona } from '../cena/formato.ts';
 import { Atlas, type Quadro } from './texturas.ts';
 import type { Camera, AlvosCamera } from './camera.ts';
 import type { Preset } from '../qualidade/presets.ts';
@@ -22,7 +22,8 @@ import {
 import { CORES_ESTADO, ICONES } from '../arte/estados.ts';
 import { linha, pxl, ret } from '../arte/primitivas.ts';
 
-export interface OpcoesVista { tam: Tam; maoFeita: PasseMao; paleta: NomePaleta; preset: Preset }
+/** `placasGrandes`: placas das zonas em dobro (escala inteira), para ler o celular de longe. */
+export interface OpcoesVista { tam: Tam; maoFeita: PasseMao; paleta: NomePaleta; preset: Preset; placasGrandes?: boolean }
 
 export interface Vista {
   readonly alvos: AlvosCamera;
@@ -36,18 +37,22 @@ export interface Vista {
   movimentoReduzido: boolean;
   /** Âncora do balão de alguém, em pixels de arte do mundo da vista (ou null). */
   pontoBalao(p: Pessoa): [number, number] | null;
-  /** Quem ou que zona está sob um ponto da tela (pixels de arte da vista). */
-  tocar(x: number, y: number): { pessoa?: Pessoa; zona?: string } | null;
+  /** Quem ou que zona está sob um ponto da tela (pixels de arte da vista), com o ladrilho do chão quando a vista sabe. */
+  tocar(x: number, y: number): { pessoa?: Pessoa; zona?: string; ladrilho?: [number, number] } | null;
   destruir(): void;
 }
 
 const PADO = 28;
+/** Quadros por pose guardados por aparência (a pose mais longa tem 4). */
+const NQ = 4;
 const ESTADOS_ICONE = Object.keys(ICONES) as Estado[];
 const CORES_PARTICULA_PADRAO = 0xffffff;
 /** Cores da meia-luz fria (multiplicam): mobília apagada, piso e quem dorme na cápsula. */
 export const TINT_APAGADO = 0x8d97c6, TINT_PISO_ESPERA = 0x5d6ba6, TINT_RECARGA = 0xaab3dc;
+/** Cor das telas de site desligadas na parede (ala de tema agência em espera). */
+export const TINT_TELA_APAGADA = 0x070912;
 
-interface VisCamada { s: Sprite; ids: Int32Array; quadro: (o: CtxObjeto, a: InfoAnim) => number; emEspera?: number | 'anima' }
+interface VisCamada { nome: string; s: Sprite; ids: Int32Array; quadro: (o: CtxObjeto, a: InfoAnim) => number; emEspera?: number | 'anima' }
 interface VisObj { o: ObjRT; ax: number; ay: number; base: Sprite; camadas: VisCamada[]; ret: [number, number, number, number]; vivo?: (t: number, dentro: boolean) => void; limiar: number; apagado: boolean; noite: number }
 interface VisPessoa { corpo: Sprite; rosto: Sprite | null; icone: Sprite; coluna: Sprite; apIdx: number; olhoIdx: number; criatura: boolean; androide: boolean }
 
@@ -91,6 +96,19 @@ export class VistaIso implements Vista {
   private dronesC = new Container();
   private particulasC = new Container();
   private placasC = new Container();
+  /** Ícones de estado das pessoas: por cima das placas (nenhuma placa cobre ícone; emitem luz, a noite não escurece). */
+  private iconesP = new Container();
+  /** Contadores do Núcleo: emitem luz (a noite não escurece) e em dobro, para ler de longe. */
+  private numerosC = new Container();
+  /**
+   * Placas que podem ficar na frente de uma cabeça (as flutuantes das zonas, as das cápsulas e os neons):
+   * desbotam enquanto alguém passa atrás delas. `z`: profundidade (null: placa por cima de tudo).
+   */
+  private placasDesbotam: { s: Sprite; z: number | null }[] = [];
+  private cabecas: { x0: number; y0: number; x1: number; y1: number; z: number }[] = [];
+  private nCabecas = 0;
+  /** Ladrilhos ocupados por cápsulas de sala (quem senta nelas tem o balão acima da placa). */
+  private podEm = new Set<string>();
   /** Ícones fixos de ala em espera, ao lado da placa (emitem luz: a noite não escurece). */
   private iconesEsperaC = new Container();
   private iconesEspera: { s: Sprite; zona: string }[] = [];
@@ -130,7 +148,7 @@ export class VistaIso implements Vista {
   private idsOnAir: [number, number] = [0, 0];
   private idsNuvem: number[] = [];
   private idsObra: number[] = []; private idBarraFundo = 0; private idBarraCheia = 0;
-  private idsDigito: number[] = []; private idRotuloEntregas = 0;
+  private idsDigito: number[] = []; private idRotuloEntregas = 0; private idRotuloErros = 0;
   private idsPeixe: number[] = [];
   private idColunaTalvez = 0;
   // sprites de pools
@@ -141,7 +159,11 @@ export class VistaIso implements Vista {
   private pool = { pulsos: [] as Sprite[], sombras: [] as Sprite[], minis: [] as Sprite[][], drones: [] as Sprite[][], particulas: [] as Sprite[], brilhos: [] as Sprite[] };
   private brilhosFixos: { s: Sprite; L: Mundo['luzes'][number] }[] = [];
   private textoEntregas: { rotulo: Sprite; digitos: Sprite[]; x: number; y: number } | null = null;
-  private obraSprites: { andaime: Sprite; drones: Sprite[]; fundo: Sprite; cheia: Sprite } | null = null;
+  /** Erros do dia, embaixo das entregas (só com os dados do servidor). */
+  private textoErros: { rotulo: Sprite; digitos: Sprite[]; x: number; y: number } | null = null;
+  private fundoNumeros: Sprite | null = null;
+  /** Um conjunto de sprites por obra em andamento (andaime, três drones e a barra). */
+  private obraPool: { andaime: Sprite; drones: Sprite[]; fundo: Sprite; cheia: Sprite }[] = [];
   private apagaoSprites = new Map<string, Sprite>();
   private nLuzes = -1;
   readonly medidas = { sprites: 0, texturas: 0, atlasMb: 0, atlasOcupacao: 0, quadrosAtlas: 0, estaticoMb: 0, assarMs: 0, assarDesenhoMs: 0, assarAparoMs: 0, assarCopiaMs: 0, estaticoMs: 0 };
@@ -153,7 +175,8 @@ export class VistaIso implements Vista {
     const geo = m.geo;
     this.alvos = {
       alvoZona: (id) => { const z = m.zonaPorId.get(id); if (!z) return null; const [x, y] = geo.iso((z.i0 + z.i1 + 1) / 2, (z.j0 + z.j1 + 1) / 2); return [x, y - 26]; },
-      alvoUrgente: () => { const p = m.pessoas.find((a) => a.visivel && a.estado === 'esperando'); if (!p) return null; const [x, y] = geo.iso(p.pi, p.pj); return [x, y - 20]; },
+      alvoUrgente: () => { const p = m.urgentes ? m.urgentes.find((a) => a.visivel) : m.pessoas.find((a) => a.visivel && a.estado === 'esperando'); if (!p) return null; const [x, y] = geo.iso(p.pi, p.pj); return [x, y - 20]; },
+      urgentes: () => (m.urgentes ?? m.pessoas.filter((a) => a.estado === 'esperando')).filter((a) => a.visivel).map((a) => { const [x, y] = geo.iso(a.pi, a.pj); return { id: a.id, x, y: y - 20 }; }),
       alvoForcado: () => {
         const f = m.focoForcado;
         if (!f || f.ate <= m.relogio.agora) return null;
@@ -173,11 +196,14 @@ export class VistaIso implements Vista {
         return [f.x, f.y];
       },
       emEspera: (id) => m.emEspera(id),
+      // borda de baixo do chão (o losango do andar) na coluna x da tela
+      fundoEm: (x) => Math.min(geo.oy + (x - geo.ox) / 2 + 16 * geo.nj, geo.oy + 16 * geo.ni - (x - geo.ox) / 2),
       limites: (vw, vh) => ({ minX: geo.ox - geo.nj * 16 + vw * 0.25, maxX: geo.ox + geo.ni * 16 - vw * 0.25, minY: geo.oy - geo.parede + vh * 0.32, maxY: geo.oy + (geo.ni + geo.nj) * 8 - vh * 0.32 }),
     };
     this.ordenada.sortableChildren = true;
     this.palco.addChild(this.mundoC);
-    for (const c of [this.fundoDia, this.ceu, this.estatico, this.esperaC, this.janelasC, this.letreirosC, this.pulsosC, this.planosC, this.sombrasC, this.obraC, this.ordenada, this.minisC, this.dronesC, this.particulasC, this.placasC, this.iconesEsperaC, this.apagoes]) this.mundoC.addChild(c);
+    this.iconesP.sortableChildren = true;
+    for (const c of [this.fundoDia, this.ceu, this.estatico, this.esperaC, this.janelasC, this.letreirosC, this.pulsosC, this.planosC, this.sombrasC, this.obraC, this.ordenada, this.minisC, this.dronesC, this.particulasC, this.placasC, this.iconesP, this.numerosC, this.iconesEsperaC, this.apagoes]) this.mundoC.addChild(c);
     this.palco.addChild(this.luzMundo);
     this.luzMundo.addChild(this.sol);
   }
@@ -191,40 +217,12 @@ export class VistaIso implements Vista {
     usarPaleta(paletaCena);
     const extras: CtxObjeto[] = [{ tipo: 'pod', i: 0, j: 0, props: { nome: m.cena.textos.obra.salaNome } }, { tipo: 'planta', i: 0, j: 0, props: {} }];
     for (const o of [...m.objetos, ...extras]) passos.push(() => this.assarObjeto(o));
-    // 2. personagens
+    // 2. personagens (com os olhos e a luz do peito por estado dos androides); quem chegar depois
+    // da carga com uma aparência nova é assado na hora em que entra (garantirAparencia)
     const aps = new Set<string>(m.pessoas.map((p) => p.aparencia));
     aps.add(m.cena.textos.obra.agente.aparencia);
-    const lista = [...aps].filter((k) => m.cena.aparencias[k]);
-    lista.forEach((k, i) => this.apIndice.set(k, i));
-    const NQ = 4;
-    this.idsPessoa = new Int32Array(lista.length * POSES.length * NQ * 2).fill(-1);
-    for (const k of lista) {
-      const ap = m.cena.aparencias[k];
-      passos.push(() => {
-        usarPaleta('fria');
-        const ai = this.apIndice.get(k)!;
-        const { w, h } = DIM[tam];
-        POSES.forEach((ps, pi) => {
-          for (let q = 0; q < ps.n; q++) for (let c = 0; c < 2; c++) {
-            const id = A.assar(`p|${k}|${tam}|${this.op.maoFeita}|${ps.pose}|${q}|${c}`, w, h, w / 2, h - 1, (g) => desenharPersonagem(g, ap, ps.pose, q, c === 1, tam, this.op.maoFeita));
-            this.idsPessoa[((ai * POSES.length + pi) * NQ + q) * 2 + c] = id;
-          }
-        });
-        usarPaleta(paletaCena);
-      });
-    }
-    // olhos e luz do peito por estado
-    const olhos = [...new Set(lista.map((k) => m.cena.aparencias[k]).filter((ap): ap is Extract<Aparencia, { tipo: 'androide' }> => ap?.tipo === 'androide').map((ap) => ap.olho ?? '#7ef3ff'))];
-    olhos.forEach((o, i) => this.olhoIndice.set(o, i));
-    this.idsRosto = new Int32Array(olhos.length * ROSTOS.length).fill(-1);
-    passos.push(() => {
-      usarPaleta('fria');
-      const { w, h } = DIM[tam];
-      olhos.forEach((olho, oi) => ROSTOS.forEach((ro, ri) => {
-        this.idsRosto[oi * ROSTOS.length + ri] = A.assar(`r|${olho}|${tam}|${ro}`, w, h, w / 2, h - 1, (g) => desenharRosto(g, { tipo: 'androide', papel: '#888888', olho }, ro, tam));
-      }));
-      usarPaleta(paletaCena);
-    });
+    for (const k of m.aparenciasPrevistas) aps.add(k);
+    for (const k of [...aps].filter((x) => m.cena.aparencias[x])) passos.push(() => { this.garantirAparencia(k); });
     // 3. efeitos e letreiros acesos (o estático tem o tubo apagado)
     passos.push(() => this.assarEfeitos());
     passos.push(() => this.assarLetreiros());
@@ -240,6 +238,72 @@ export class VistaIso implements Vista {
     const uso = A.uso();
     Object.assign(this.medidas, { atlasMb: uso.mb, atlasOcupacao: uso.ocupacao, quadrosAtlas: uso.quadros, assarMs: performance.now() - tIni, assarDesenhoMs: A.tempos.desenho, assarAparoMs: A.tempos.aparar, assarCopiaMs: A.tempos.copia });
     this.montarFixos();
+  }
+
+  /** Assa (na carga ou depois dela) os quadros de uma aparência e devolve o índice dela. */
+  private garantirAparencia(k: string): number {
+    const ja = this.apIndice.get(k);
+    if (ja !== undefined) return ja;
+    const ap = this.m.cena.aparencias[k];
+    if (!ap) return 0;
+    const ai = this.apIndice.size, tam = this.op.tam, bloco = POSES.length * NQ * 2;
+    this.apIndice.set(k, ai);
+    if (this.idsPessoa.length < (ai + 1) * bloco) { const novo = new Int32Array((ai + 1) * bloco).fill(-1); novo.set(this.idsPessoa); this.idsPessoa = novo; }
+    const ant = paletaAtual(); usarPaleta('fria');
+    const { w, h } = DIM[tam];
+    POSES.forEach((ps, pi) => {
+      for (let q = 0; q < ps.n; q++) for (let c = 0; c < 2; c++) {
+        this.idsPessoa[((ai * POSES.length + pi) * NQ + q) * 2 + c] = this.atlas.assar(`p|${k}|${tam}|${this.op.maoFeita}|${ps.pose}|${q}|${c}`, w, h, w / 2, h - 1, (g) => desenharPersonagem(g, ap, ps.pose, q, c === 1, tam, this.op.maoFeita));
+      }
+    });
+    usarPaleta(ant);
+    if (ap.tipo === 'androide') this.garantirOlho(ap.olho ?? '#7ef3ff');
+    return ai;
+  }
+
+  /** Olhos de LED e luz do peito de cada estado, para uma cor de olho. */
+  private garantirOlho(olho: string): number {
+    const ja = this.olhoIndice.get(olho);
+    if (ja !== undefined) return ja;
+    const oi = this.olhoIndice.size, tam = this.op.tam;
+    this.olhoIndice.set(olho, oi);
+    if (this.idsRosto.length < (oi + 1) * ROSTOS.length) { const novo = new Int32Array((oi + 1) * ROSTOS.length).fill(-1); novo.set(this.idsRosto); this.idsRosto = novo; }
+    const ant = paletaAtual(); usarPaleta('fria');
+    const { w, h } = DIM[tam];
+    ROSTOS.forEach((ro, ri) => { this.idsRosto[oi * ROSTOS.length + ri] = this.atlas.assar(`r|${olho}|${tam}|${ro}`, w, h, w / 2, h - 1, (g) => desenharRosto(g, { tipo: 'androide', papel: '#888888', olho }, ro, tam)); });
+    usarPaleta(ant);
+    return oi;
+  }
+
+  /** Drone e minidrone numa cor (as cores dos bots que chegam depois da carga também). */
+  private garantirDrone(cor: string): [number, number] {
+    const ja = this.idsDrone.get(cor);
+    if (ja) return ja;
+    const ant = paletaAtual(); usarPaleta('fria');
+    const ids = [0, 1].map((q) => this.atlas.assar(`drone|${cor}|${q}`, 14, 10, 0, 0, (g) => desenharDrone(g, cor, q))) as [number, number];
+    usarPaleta(ant);
+    this.idsDrone.set(cor, ids);
+    return ids;
+  }
+  private garantirMini(cor: string): [number, number] {
+    const ja = this.idsMini.get(cor);
+    if (ja) return ja;
+    const ant = paletaAtual(); usarPaleta('fria');
+    const ids = [0, 1].map((q) => this.atlas.assar(`mini|${cor}|${q}`, 12, 12, 0, 0, (g) => desenharMini(g, cor, q))) as [number, number];
+    usarPaleta(ant);
+    this.idsMini.set(cor, ids);
+    return ids;
+  }
+  /** Brilho de uma luz (cor e raio), na paleta da cena. */
+  private garantirBrilho(chave: string): number {
+    const ja = this.idBrilho.get(chave);
+    if (ja !== undefined) return ja;
+    const ant = paletaAtual(); usarPaleta(this.op.paleta);
+    const [cor, rs] = chave.split('|'); const r = Number(rs);
+    const id = this.atlas.assar(`brilho|${chave}|${paletaAtual()}`, r * 2, r * 2, r, r, (g) => desenharBrilho(g, cp(cor), r));
+    usarPaleta(ant);
+    this.idBrilho.set(chave, id);
+    return id;
   }
 
   private assarObjeto(o: CtxObjeto): void {
@@ -267,8 +331,8 @@ export class VistaIso implements Vista {
     const coresDrone = new Set<string>(['#ffb347', '#7dffa8', '#f2b45a', '#f2c230', '#6fd3ff']);
     const coresMini = new Set<string>(['#e0704f']);
     for (const ap of Object.values(m.cena.aparencias)) if (ap.tipo === 'androide') { coresDrone.add(ap.papel); coresMini.add(ap.papel); }
-    for (const c of coresDrone) this.idsDrone.set(c, [0, 1].map((q) => A.assar(`drone|${c}|${q}`, 14, 10, 0, 0, (g) => desenharDrone(g, c, q))) as [number, number]);
-    for (const c of coresMini) this.idsMini.set(c, [0, 1].map((q) => A.assar(`mini|${c}|${q}`, 12, 12, 0, 0, (g) => desenharMini(g, c, q))) as [number, number]);
+    for (const c of coresDrone) this.garantirDrone(c);
+    for (const c of coresMini) this.garantirMini(c);
     for (const t of ['envelope', 'cubo', 'check'] as Carga[]) this.idCarga.set(t, A.assar(`carga|${t}`, 9, 7, 4, 0, (g) => desenharCarga(g, t)));
     const coresPulso = new Set<string>([...Object.values(CORES_ESTADO), '#ffb347', '#7dffa8', '#ff6b5a', '#f2b45a']);
     for (const c of coresPulso) this.idPulso.set(c, A.assar(`pulso|${c}`, 3, 2, 1, 1, (g) => desenharPulso(g, c)));
@@ -291,6 +355,7 @@ export class VistaIso implements Vista {
     }
     // dígitos do contador de entregas do Núcleo
     this.idRotuloEntregas = A.assar('entregas', larguraTexto('ENTREGAS') + 1, 7, 0, 0, (g) => desenharTexto(g, 'ENTREGAS', '#e8fdff'));
+    this.idRotuloErros = A.assar('erros', larguraTexto('ERROS') + 1, 7, 0, 0, (g) => desenharTexto(g, 'ERROS', '#ffb3a8'));
     for (let d = 0; d < 10; d++) this.idsDigito.push(A.assar(`dig|${d}`, 4, 7, 0, 0, (g) => desenharTexto(g, String(d), '#e8fdff')));
     // obra: andaime em 16 alturas e barra de progresso
     const ox = 2 * 16 + PADO, oy = 40 + PADO;
@@ -309,10 +374,7 @@ export class VistaIso implements Vista {
     for (const L of m.luzes) brilhos.add(`${L.cor}|${L.r}`);
     for (const c of this.idsDrone.keys()) brilhos.add(`${c}|14`);
     for (const k of ['#ffcf4d|30', '#9ff3ff|40', '#c9a7ff|20', '#d9b45a|26']) brilhos.add(k);
-    for (const k of brilhos) {
-      const [cor, rs] = k.split('|'); const r = Number(rs);
-      this.idBrilho.set(k, A.assar(`brilho|${k}|${paletaAtual()}`, r * 2, r * 2, r, r, (g) => desenharBrilho(g, cp(cor), r)));
-    }
+    for (const k of brilhos) this.garantirBrilho(k);
   }
 
   /** Letreiros das paredes, acesos de noite e de dia, recortados no retângulo de cada um. */
@@ -346,11 +408,12 @@ export class VistaIso implements Vista {
     }
     for (const z of m.zonas) if (z.placa) {
       const id = this.atlas.idDe(`placa|${z.id}`), idOff = this.atlas.idDe(`placa|${z.id}|off`); if (id === undefined || idOff === undefined) continue;
-      const fr = this.q(id); const p = geo.iso(z.i0 + 1.6, z.j0 + 0.6, 46);
-      const s = this.spr(id, this.placasC); s.position.set(Math.round(p[0]) + fr.dx, Math.round(p[1]) + fr.dy);
+      const fr = this.q(id), esc = this.escPlaca(fr); const p = this.lugarDaPlaca(z, fr);
+      const s = this.spr(id, this.placasC); s.scale.set(esc); s.position.set(Math.round(p[0]) + fr.dx * esc, Math.round(p[1]) + fr.dy * esc);
       this.placasVis.push({ s, on: fr, off: this.q(idOff), zona: z.id, x: Math.round(p[0]), y: Math.round(p[1]) });
+      this.placasDesbotam.push({ s, z: null });
       // ala em espera: ícone fixo de stand-by na ponta direita da placa
-      if (z.tipo === 'ala') { const ic = this.spr(this.idIconeEspera, this.iconesEsperaC); ic.position.set(s.x + fr.w + 1, s.y + Math.round((fr.h - 9) / 2)); ic.visible = false; this.iconesEspera.push({ s: ic, zona: z.id }); }
+      if (z.tipo === 'ala') { const ic = this.spr(this.idIconeEspera, this.iconesEsperaC); ic.position.set(s.x + fr.w * esc + 1, s.y + Math.round((fr.h * esc - 9) / 2)); ic.visible = false; this.iconesEspera.push({ s: ic, zona: z.id }); }
     }
     // letreiros acesos por cima do tubo apagado do estático
     for (const L of this.letreirosDef) {
@@ -390,7 +453,7 @@ export class VistaIso implements Vista {
       const ua = Math.round(d.u0) + 2, ub = Math.round(d.u1) - 2, L = ub - ua, uc = (ua + ub) / 2;
       const z = d.parede === 'J' ? m.zonaEm(Math.floor(uc / 16), 0) : m.zonaEm(0, Math.floor(uc / 16));
       if (!z || z.tipo !== 'ala' || L <= 0) continue;
-      const s = new Sprite(Texture.WHITE); s.tint = 0x070912; s.alpha = 0.92; s.visible = false;
+      const s = new Sprite(Texture.WHITE); s.tint = TINT_TELA_APAGADA; s.alpha = 0.92; s.visible = false;
       if (d.parede === 'J') s.setFromMatrix(new Matrix(L, L / 2, 0, 29, geo.ox + ua, geo.oy + Math.floor(ua / 2) - 50));
       else s.setFromMatrix(new Matrix(L, -L / 2, 0, 29, geo.ox - ub, geo.oy + Math.floor(ub / 2) - 50));
       this.letreirosC.addChild(s);
@@ -401,8 +464,13 @@ export class VistaIso implements Vista {
     if (nuc) {
       const cen = geo.iso(nuc.i + 2, nuc.j + 2, 50);
       const x = Math.round(cen[0] - 20), y = Math.round(cen[1] + 24);
-      this.textoEntregas = { rotulo: this.spr(this.idRotuloEntregas, this.placasC), digitos: [0, 1, 2, 3].map(() => this.spr(this.idsDigito[0], this.placasC)), x, y };
-      this.textoEntregas.rotulo.position.set(x, y - 2);
+      // contadores: rótulo em 1x e números em 2x, sobre uma placa escura, sem a tinta da noite
+      const linhas = m.servidor ? 2 : 1, lr = larguraTexto('ENTREGAS');
+      const fundo = new Sprite(Texture.WHITE); fundo.tint = 0x0a0c1c; fundo.alpha = 0.7; fundo.position.set(x - 3, y - 11); fundo.width = lr + 5 + 8 + 3; fundo.height = 18 * linhas + 2; this.numerosC.addChild(fundo);
+      this.fundoNumeros = fundo;
+      const novo = (idRot: number, yy: number, xr: number) => { const t = { rotulo: this.spr(idRot, this.numerosC), digitos: [0, 1, 2, 3].map(() => { const d = this.spr(this.idsDigito[0], this.numerosC); d.scale.set(2); return d; }), x, y: yy }; t.rotulo.position.set(xr, yy - 2); return t; };
+      this.textoEntregas = novo(this.idRotuloEntregas, y, x);
+      if (m.servidor) this.textoErros = novo(this.idRotuloErros, y + 18, x + lr - larguraTexto('ERROS'));
     }
     // feixes de sol (dia): paralelogramos por matriz, sem textura própria
     for (const pts of feixesDeSol(m.cena, geo)) {
@@ -416,7 +484,7 @@ export class VistaIso implements Vista {
   private montarBrilhos(): void {
     for (const b of this.brilhosFixos) b.s.destroy();
     this.brilhosFixos = this.m.luzes.map((L) => {
-      const id = this.idBrilho.get(`${L.cor}|${L.r}`) ?? this.idBrilho.values().next().value!;
+      const id = this.garantirBrilho(`${L.cor}|${L.r}`);
       const s = this.spr(id, this.luzMundo); s.blendMode = 'add';
       const fr = this.q(id); s.position.set(Math.round(L.x) + fr.dx, Math.round(L.y) + fr.dy);
       return { s, L };
@@ -424,12 +492,22 @@ export class VistaIso implements Vista {
     this.nLuzes = this.m.luzes.length;
   }
 
-  /** Cria os sprites dos objetos e das pessoas que ainda não existem na vista. */
+  /**
+   * Cria os sprites dos objetos e das pessoas que ainda não existem na vista (assando o que
+   * nasceu depois da carga) e solta os de quem saiu do mundo.
+   */
   private sincronizar(): void {
     const m = this.m;
+    const ant = paletaAtual(); usarPaleta(this.op.paleta);
+    for (const [p, v] of this.pessoas) {
+      if (m.porId.get(p.id) === p) continue;
+      v.corpo.destroy(); v.rosto?.destroy(); v.icone.destroy(); v.coluna.destroy();
+      this.pessoas.delete(p);
+    }
     for (let k = this.objetos.length; k < m.objetos.length; k++) {
       const o = m.objetos[k];
       const def = o.def;
+      this.assarObjeto(o);
       const idBase = this.atlas.idDe(`o|${o.tipo}|${def.varianteBase?.(o) ?? ''}`);
       const pai = o.plano ? this.planosC : this.ordenada;
       const [X, Y] = m.geo.iso(o.i, o.j);
@@ -446,8 +524,10 @@ export class VistaIso implements Vista {
         const s = new Sprite(Texture.EMPTY); s.roundPixels = true; s.visible = false;
         if (!o.plano) s.zIndex = o.chave + 1e-4 * (ci + 1);
         pai.addChild(s);
-        vis.camadas.push({ s, ids, quadro: c.quadro, emEspera: c.emEspera });
+        vis.camadas.push({ nome: c.nome, s, ids, quadro: c.quadro, emEspera: c.emEspera });
+        if ((o.tipo === 'pod' && c.nome === 'placa') || (o.tipo === 'placaNeon' && c.nome === 'neon')) this.placasDesbotam.push({ s, z: o.chave });
       });
+      if (o.tipo === 'pod') for (let a = 0; a < o.w; a++) for (let b = 0; b < o.d; b++) this.podEm.add(`${o.i + a},${o.j + b}`);
       if (o.tipo === 'aquario') vis.vivo = this.vivoAquario(o, pai);
       if (o.tipo === 'teleporte') vis.vivo = this.vivoTeleporte(o, pai);
       this.objetos.push(vis);
@@ -467,11 +547,12 @@ export class VistaIso implements Vista {
       if (this.pessoas.has(p)) continue;
       const ap = p.ap;
       const androide = ap?.tipo === 'androide';
+      this.garantirAparencia(p.aparencia);
       const corpo = new Sprite(Texture.EMPTY); corpo.roundPixels = true;
       const rosto = androide ? new Sprite(Texture.EMPTY) : null; if (rosto) rosto.roundPixels = true;
       const icone = new Sprite(Texture.EMPTY); icone.roundPixels = true;
       const coluna = new Sprite(Texture.WHITE); coluna.tint = 0xffcf4d; coluna.width = 4; coluna.height = this.op.tam === 24 ? 64 : 58; coluna.visible = false;
-      this.ordenada.addChild(corpo); if (rosto) this.ordenada.addChild(rosto); this.ordenada.addChild(icone); this.ordenada.addChild(coluna);
+      this.ordenada.addChild(corpo); if (rosto) this.ordenada.addChild(rosto); this.iconesP.addChild(icone); this.ordenada.addChild(coluna);
       this.pessoas.set(p, {
         corpo, rosto, icone, coluna, apIdx: this.apIndice.get(p.aparencia) ?? 0,
         olhoIdx: androide ? (this.olhoIndice.get((ap as { olho?: string }).olho ?? '#7ef3ff') ?? 0) : 0,
@@ -479,6 +560,7 @@ export class VistaIso implements Vista {
       });
     }
     if (this.m.luzes.length !== this.nLuzes) this.montarBrilhos();
+    usarPaleta(ant);
     this.versaoVista = m.versao;
   }
 
@@ -531,7 +613,9 @@ export class VistaIso implements Vista {
     // cheia por cima: os olhos de LED, a luz do peito, os ícones de estado e a coluna âmbar emitem
     // luz, ficam na cor cheia e continuam na ordem de profundidade de sempre
     this.corNoite = noite ? numeroCor(cp('#4b5592')) : 0xffffff;
-    for (const c of [this.fundoDia, this.ceu, this.estatico, this.janelasC, this.letreirosC, this.pulsosC, this.planosC, this.sombrasC, this.obraC, this.minisC, this.dronesC, this.particulasC, this.placasC, this.apagoes]) c.tint = this.corNoite;
+    // as placas flutuantes das zonas são neon e as partículas (fumaça, confete, faíscas) são efeito: a noite não
+    // escurece nenhum dos dois (de noite, laranja e vermelho sumiam, e a fumaça do erro quase não se via)
+    for (const c of [this.fundoDia, this.ceu, this.estatico, this.janelasC, this.letreirosC, this.pulsosC, this.planosC, this.sombrasC, this.obraC, this.minisC, this.dronesC, this.apagoes]) c.tint = this.corNoite;
     this.r.background.color = noite ? mulCor(0x05060f, this.corNoite) : 0x9fd3ef;
     this.fundoDia.visible = !noite;
   }
@@ -540,6 +624,7 @@ export class VistaIso implements Vista {
   desenhar(cam: Camera, _dt: number): void {
     const m = this.m, pre = this.op.preset, t = m.tAnim, noite = !!this.estaticoNoite;
     if (m.versao !== this.versaoVista) this.sincronizar();
+    this.atlas.publicar();
     this.quadroN++;
     const [x0, y0] = cam.origem();
     const vw = cam.vw, vh = cam.vh;
@@ -603,6 +688,7 @@ export class VistaIso implements Vista {
     n += this.atualizarSombras();
     this.atualizarObra(t);
     n += this.atualizarPessoas(t, x0, y0, vw, vh);
+    this.desbotarPlacas(_dt);
     n += this.atualizarMinis(t);
     n += this.atualizarDrones(t);
     n += this.atualizarParticulas();
@@ -610,6 +696,52 @@ export class VistaIso implements Vista {
     n += this.atualizarLuz(t, x0, y0, vw, vh, noite);
     this.medidas.sprites = n;
     this.r.render(this.palco);
+  }
+
+  /**
+   * Lugar da placa flutuante de uma zona: perto do canto do fundo, onde nenhuma cabeça fica parada embaixo
+   * dela (postos, cápsulas, recargas, treinos, pausas, fila e a casa de quem já está na zona). Sem lugar
+   * livre, o canto de sempre.
+   */
+  /** Escala de uma placa flutuante: 2 no celular (ler de longe), 1 no resto ou quando ela em dobro tomaria meia tela. */
+  private escPlaca(fr: Quadro): number { return this.op.placasGrandes && fr.w * 2 <= 170 ? 2 : 1; }
+
+  private lugarDaPlaca(z: Zona, fr: Quadro): [number, number] {
+    const m = this.m, geo = m.geo, c = m.cena, { w: W, h: H } = DIM[this.op.tam];
+    const dentro = (i: number, j: number) => i >= z.i0 && i <= z.i1 && j >= z.j0 && j <= z.j1;
+    const fixos: [number, number][] = [];
+    for (const p of c.postos[z.id] ?? []) fixos.push(p.casa);
+    for (const v of c.vagasPod[z.id] ?? []) fixos.push([v[0] + 1, v[1]]);
+    for (const v of c.vagasRecarga[z.id] ?? []) fixos.push(v);
+    for (const s of [...c.pontos.treinos, ...c.pontos.pausas]) if (dentro(s.t[0], s.t[1])) fixos.push(s.t);
+    for (const f of c.pontos.fila) if (dentro(f[0], f[1])) fixos.push(f);
+    for (const p of m.pessoas) if (p.zona === z.id && dentro(p.casa[0], p.casa[1])) fixos.push(p.casa);
+    const cabecas = fixos.map(([i, j]) => { const [fx, fy] = geo.iso(i + 0.5, j + 0.5); const sx = fx - W / 2, sy = fy - (H - 1); return [sx + 3, sy - 13, sx + W - 3, sy + 17]; });
+    // e as placas das cápsulas, das que existem e das que podem nascer (nome de até 12 letras)
+    for (const v of c.vagasPod[z.id] ?? []) { const [px, py] = geo.iso(v[0] + 1, v[1] + 1, 54); cabecas.push([px - 27, py - 5, px + 27, py + 5]); }
+    const cands: [number, number, number][] = [];
+    for (const zz of [46, 60]) for (const [a, b] of [[1.6, 0.6], [2.6, 0.6], [0.6, 1.6], [3.6, 0.6], [0.6, 2.6], [4.6, 0.6], [0.6, 3.6], [5.6, 0.6], [0.6, 4.6], [6.6, 0.6], [7.6, 0.6], [0.6, 5.6]]) cands.push([a, b, zz]);
+    for (const [a, b, zz] of cands) {
+      if (!dentro(z.i0 + a, z.j0 + b)) continue;
+      const p = geo.iso(z.i0 + a, z.j0 + b, zz);
+      const esc = this.escPlaca(fr), x0 = p[0] + fr.dx * esc, y0 = p[1] + fr.dy * esc, x1 = x0 + fr.w * esc, y1 = y0 + fr.h * esc;
+      if (!cabecas.some((r) => x0 < r[2] && r[0] < x1 && y0 < r[3] && r[1] < y1)) return p;
+    }
+    return geo.iso(z.i0 + 1.6, z.j0 + 0.6, 46);
+  }
+
+  /** Placa na frente de uma cabeça (quem passa atrás dela) desbota até quase sumir e volta depois. */
+  private desbotarPlacas(dt: number): void {
+    const k = Math.min(1, Math.max(0.05, dt) * 8);
+    for (const pl of this.placasDesbotam) {
+      const s = pl.s;
+      if (!s.visible) { s.alpha = 1; continue; }
+      const x0 = s.x, y0 = s.y, x1 = x0 + s.width, y1 = y0 + s.height;
+      let cobre = false;
+      for (let q = 0; q < this.nCabecas && !cobre; q++) { const cb = this.cabecas[q]; cobre = (pl.z === null || cb.z < pl.z) && x0 < cb.x1 && cb.x0 < x1 && y0 < cb.y1 && cb.y0 < y1; }
+      const alvo = cobre ? 0.25 : 1;
+      s.alpha = this.movimentoReduzido ? alvo : s.alpha + (alvo - s.alpha) * k;
+    }
   }
 
   /** Estado do dono do objeto e equipamento em uso, para escolher o quadro. */
@@ -623,6 +755,8 @@ export class VistaIso implements Vista {
       const p = this.m.pessoas.find((x) => x.def.papel === (o.tipo === 'mesaComando' ? 'dono' : 'fixo'));
       info.presente = !!p?.emCasa;
     }
+    // com o servidor, a cápsula de uma sala acordada fica acesa (tela e placa), com ou sem gente dentro
+    if (o.tipo === 'pod' && this.m.servidor && typeof o.props.sala === 'string' && this.m.salaPorId.get(o.props.sala)?.dormindo === false) info.presente = true;
     if (o.tipo === 'esteira' || o.tipo === 'bike') info.usada = this.m.pessoas.some((p) => !p.andando && p.pose === 'correr' && Math.floor(p.pi) >= o.i && Math.floor(p.pi) < o.i + o.w && Math.floor(p.pj) >= o.j && Math.floor(p.pj) < o.j + o.d);
     if (o.tipo === 'camera') info.usada = this.m.global.onAir;
     if (o.zona && this.m.global.apagao.has(o.zona)) { info.ativo = null; info.presente = false; }
@@ -650,7 +784,7 @@ export class VistaIso implements Vista {
     for (const pv of this.placasVis) {
       const acesa = luzLetreiro(m.nivelZona(pv.zona), m.emEspera(pv.zona), t, this.movimentoReduzido) > 0.5;
       const fr = acesa ? pv.on : pv.off;
-      if (pv.s.texture !== fr.tex) { pv.s.texture = fr.tex; pv.s.position.set(pv.x + fr.dx, pv.y + fr.dy); }
+      if (pv.s.texture !== fr.tex) { const esc = pv.s.scale.x; pv.s.texture = fr.tex; pv.s.position.set(pv.x + fr.dx * esc, pv.y + fr.dy * esc); }
     }
     for (const tp of this.telasParede) { tp.s.visible = m.nivelZona(tp.zona) < tp.limiar; if (tp.s.visible) n++; }
     for (const ie of this.iconesEspera) { ie.s.visible = m.emEspera(ie.zona); if (ie.s.visible) n++; }
@@ -681,31 +815,34 @@ export class VistaIso implements Vista {
     return n;
   }
 
+  /** Obras em andamento: andaime que cresce, três drones em volta e a barra de progresso. */
   private atualizarObra(t: number): void {
-    const m = this.m, tr = m.cena.pontos.terreno;
-    if (!tr || m.obra.fase !== 'obra') { if (this.obraSprites) this.obraC.visible = false; return; }
-    if (!this.obraSprites) {
-      this.obraSprites = { andaime: this.spr(this.idsObra[0], this.obraC), drones: [0, 1, 2].map(() => this.spr(this.idsDrone.get('#f2c230')![0], this.obraC)), fundo: this.spr(this.idBarraFundo, this.obraC), cheia: this.spr(this.idBarraCheia, this.obraC) };
+    const m = this.m, idsD = this.garantirDrone('#f2c230');
+    let n = 0;
+    for (const ob of m.obras) {
+      const o = this.obraPool[n] ?? (this.obraPool[n] = { andaime: this.spr(this.idsObra[0], this.obraC), drones: [0, 1, 2].map(() => this.spr(idsD[0], this.obraC)), fundo: this.spr(this.idBarraFundo, this.obraC), cheia: this.spr(this.idBarraCheia, this.obraC) });
+      n++;
+      const prog = Math.max(0, Math.min(1, (m.relogio.agora - ob.inicio) / Math.max(0.1, ob.dur)));
+      const [X, Y] = m.geo.iso(ob.i, ob.j);
+      const fr = this.q(this.idsObra[Math.min(15, Math.floor(prog * 15))]);
+      o.andaime.texture = fr.tex; o.andaime.position.set(Math.round(X) + fr.dx, Math.round(Y) + fr.dy);
+      const centro = m.geo.iso(ob.i + 1, ob.j + 1, 60);
+      for (let k = 0; k < 3; k++) {
+        const a = t * 1.5 + (k * Math.PI * 2) / 3;
+        o.drones[k].texture = this.q(idsD[Math.floor(t * 16) % 2]).tex;
+        o.drones[k].position.set(Math.round(centro[0] + Math.cos(a) * 26 - 7), Math.round(centro[1] + Math.sin(a) * 12 - 6));
+      }
+      const barra = m.geo.iso(ob.i + 1, ob.j + 1, 70);
+      o.fundo.position.set(Math.round(barra[0] - 20), Math.round(barra[1]));
+      o.cheia.position.set(Math.round(barra[0] - 19), Math.round(barra[1] + 1)); o.cheia.width = Math.max(1, Math.round(38 * prog));
+      for (const s of [o.andaime, ...o.drones, o.fundo, o.cheia]) s.visible = true;
     }
-    this.obraC.visible = true;
-    const o = this.obraSprites;
-    const prog = Math.min(1, (m.relogio.agora - m.obra.inicio) / 7.5);
-    const [X, Y] = m.geo.iso(tr.i, tr.j);
-    const fr = this.q(this.idsObra[Math.min(15, Math.floor(prog * 15))]);
-    o.andaime.texture = fr.tex; o.andaime.position.set(Math.round(X) + fr.dx, Math.round(Y) + fr.dy);
-    const centro = m.geo.iso(tr.i + 1, tr.j + 1, 60);
-    for (let k = 0; k < 3; k++) {
-      const a = t * 1.5 + (k * Math.PI * 2) / 3;
-      o.drones[k].texture = this.q(this.idsDrone.get('#f2c230')![Math.floor(t * 16) % 2]).tex;
-      o.drones[k].position.set(Math.round(centro[0] + Math.cos(a) * 26 - 7), Math.round(centro[1] + Math.sin(a) * 12 - 6));
-    }
-    const barra = m.geo.iso(tr.i + 1, tr.j + 1, 70);
-    o.fundo.position.set(Math.round(barra[0] - 20), Math.round(barra[1]));
-    o.cheia.position.set(Math.round(barra[0] - 19), Math.round(barra[1] + 1)); o.cheia.width = Math.max(1, Math.round(38 * prog));
+    for (let k = n; k < this.obraPool.length; k++) { const o = this.obraPool[k]; for (const s of [o.andaime, ...o.drones, o.fundo, o.cheia]) s.visible = false; }
   }
 
   private atualizarPessoas(t: number, x0: number, y0: number, vw: number, vh: number): number {
     let n = 0;
+    this.nCabecas = 0;
     const tam = this.op.tam, { w: W, h: H } = DIM[tam];
     for (const [p, v] of this.pessoas) {
       const [fx, fy] = this.m.geo.iso(p.pi, p.pj, p.z);
@@ -719,6 +856,8 @@ export class VistaIso implements Vista {
       const fr = this.q(id);
       const z = this.profundidade(p, sx, sy, W, H);
       const ax = Math.round(fx), ay = Math.round(fy);
+      const cb = this.cabecas[this.nCabecas] ?? (this.cabecas[this.nCabecas] = { x0: 0, y0: 0, x1: 0, y1: 0, z: 0 });
+      cb.x0 = sx + 3; cb.x1 = sx + W - 3; cb.y0 = sy - 13; cb.y1 = sy + 17; cb.z = z; this.nCabecas++;
       this.colocar(v.corpo, fr, ax, ay, p.espelho, W);
       v.corpo.zIndex = z; v.corpo.alpha = p.alpha; v.corpo.visible = true; n++;
       // bot na cápsula (e figurante de ala em espera): meia-luz, olhos apagados, luz do peito lenta
@@ -743,7 +882,7 @@ export class VistaIso implements Vista {
         const fi = this.q(this.idIcone.get(p.estado)!);
         v.icone.texture = fi.tex;
         v.icone.position.set(sx + (tam === 24 ? 7 : 3), sy - 12 + (pose === 'digitando' || pose === 'dormir' ? (tam === 24 ? 4 : 3) : 0) + (this.movimentoReduzido ? 0 : Math.round(Math.sin(t * 3 + p.pi))));
-        v.icone.zIndex = z + 2e-5; v.icone.alpha = p.alpha; v.icone.visible = true; n++;
+        v.icone.zIndex = z; v.icone.alpha = p.alpha; v.icone.visible = true; n++;
       } else v.icone.visible = false;
       if (p.estado === 'esperando' || p.estado === 'talvez') {
         const talvez = p.estado === 'talvez';
@@ -768,6 +907,8 @@ export class VistaIso implements Vista {
     for (const b of this.ordenaveis) {
       if (b.x0 >= px1 || sx >= b.x1 || b.y0 >= py1 || sy >= b.y1) continue;
       const o = b.o;
+      // dentro de uma cápsula de sala: na frente dela inteira (as paredes do fundo não cobrem quem senta ali)
+      if (o.tipo === 'pod' && p.pi > o.i && p.pi < o.i + o.w && p.pj > o.j && p.pj < o.j + o.d) { zMin = Math.max(zMin, o.chave + 0.003); continue; }
       const frente = p.pi - 0.3 >= o.i + o.w || p.pj - 0.3 >= o.j + o.d;
       const atras = p.pi + 0.3 <= o.i || p.pj + 0.3 <= o.j;
       if (frente && !atras) zMin = Math.max(zMin, o.chave + 0.003);
@@ -790,8 +931,11 @@ export class VistaIso implements Vista {
     let k = 0;
     for (const mi of this.m.minis) {
       const v = this.pool.minis[k] ?? (this.pool.minis[k] = [this.spr(this.idPonto, this.minisC), this.spr(this.idIcone.get('lendo')!, this.minisC)]);
-      const ids = this.idsMini.get(mi.cor) ?? this.idsMini.values().next().value!;
+      const ids = this.garantirMini(mi.cor);
       v[0].texture = this.q(ids[Math.floor(t * 12) % 2]).tex;
+      // o ícone em cima do minidrone é o estado do subagente (lendo, quando o simulador não diz)
+      const ic = this.idIcone.get(mi.estado && this.idIcone.has(mi.estado) ? mi.estado : 'lendo')!;
+      v[1].texture = this.q(ic).tex;
       v[0].position.set(Math.round(mi.x - 6), Math.round(mi.y - 6 + (this.movimentoReduzido ? 0 : Math.sin(t * 4 + mi.x) * 2)));
       v[1].position.set(Math.round(mi.x - 3) - 1, Math.round(mi.y - 20));
       v[0].visible = v[1].visible = true; k++;
@@ -804,7 +948,7 @@ export class VistaIso implements Vista {
     let n = 0;
     for (const d of this.m.drones) {
       const v = this.pool.drones[n] ?? (this.pool.drones[n] = [this.spr(this.idPonto, this.dronesC), this.spr(this.idPonto, this.dronesC)]);
-      const ids = this.idsDrone.get(d.cor) ?? this.idsDrone.get('#ffb347')!;
+      const ids = this.garantirDrone(d.cor);
       v[0].texture = this.q(ids[Math.floor(t * 16) % 2]).tex;
       v[0].position.set(Math.round(d.x - 7), Math.round(d.y - d.z - 6)); v[0].visible = true;
       const idc = this.idCarga.get(d.carga);
@@ -835,14 +979,20 @@ export class VistaIso implements Vista {
   }
 
   private atualizarTextoEntregas(): void {
-    const te = this.textoEntregas; if (!te) return;
-    const txt = String(this.m.global.entregas).slice(-4);
     const lr = larguraTexto('ENTREGAS');
-    for (let k = 0; k < te.digitos.length; k++) {
-      const s = te.digitos[k];
-      if (k >= txt.length) { s.visible = false; continue; }
-      s.texture = this.q(this.idsDigito[Number(txt[k])]).tex; s.position.set(te.x + lr + 5 + k * 4, te.y - 2); s.visible = true;
-    }
+    const escrever = (te: { digitos: Sprite[]; x: number; y: number } | null, n: number) => {
+      if (!te) return;
+      const txt = String(n).slice(-4);
+      for (let k = 0; k < te.digitos.length; k++) {
+        const s = te.digitos[k];
+        if (k >= txt.length) { s.visible = false; continue; }
+        s.texture = this.q(this.idsDigito[Number(txt[k])]).tex; s.position.set(te.x + lr + 5 + k * 8, te.y - 9); s.visible = true;
+      }
+    };
+    escrever(this.textoEntregas, this.m.global.entregas);
+    escrever(this.textoErros, this.m.global.erros);
+    // a placa escura acompanha o número mais comprido
+    if (this.fundoNumeros) { const n = Math.max(String(this.m.global.entregas).slice(-4).length, this.textoErros ? String(this.m.global.erros).slice(-4).length : 0); this.fundoNumeros.width = lr + 5 + n * 8 + 3; }
   }
 
   private atualizarLuz(t: number, x0: number, y0: number, vw: number, vh: number, noite: boolean): number {
@@ -892,7 +1042,7 @@ export class VistaIso implements Vista {
     // brilhos dinâmicos
     let k = 0;
     const usar = (chave: string, x: number, y: number, alpha: number) => {
-      const id = this.idBrilho.get(chave); if (id === undefined) return;
+      const id = this.garantirBrilho(chave);
       const s = this.pool.brilhos[k] ?? (this.pool.brilhos[k] = (() => { const sp = this.spr(id, this.luzMundo); sp.blendMode = 'add'; return sp; })());
       const fr = this.q(id); s.texture = fr.tex; s.position.set(Math.round(x) + fr.dx, Math.round(y) + fr.dy); s.alpha = alpha; s.visible = true; k++;
     };
@@ -906,18 +1056,20 @@ export class VistaIso implements Vista {
   pontoBalao(p: Pessoa): [number, number] | null {
     if (!p.visivel) return null;
     const [fx, fy] = this.m.geo.iso(p.pi, p.pj, p.z);
+    // sentado numa cápsula de sala: o balão sobe acima da placa dela (a placa fica a 54 px do chão, 9 px de altura)
+    if (!p.andando && this.podEm.has(`${Math.floor(p.pi)},${Math.floor(p.pj)}`)) return [fx, fy - 61];
     const alt = this.op.tam === 24 ? 54 : 46;
     const sent = p.pose === 'digitando' || p.pose === 'dormir' ? (this.op.tam === 24 ? 4 : 3) : 0;
     return [fx, fy - alt + sent];
   }
 
-  tocar(x: number, y: number): { pessoa?: Pessoa; zona?: string } | null {
+  tocar(x: number, y: number): { pessoa?: Pessoa; zona?: string; ladrilho?: [number, number] } | null {
     const { w: W, h: H } = DIM[this.op.tam];
     const cands = this.m.pessoas.filter((a) => a.visivel).sort((a, b) => (b.pi + b.pj) - (a.pi + a.pj));
     for (const a of cands) { const [fx, fy] = this.m.geo.iso(a.pi, a.pj, a.z); if (x >= fx - W / 2 && x <= fx + W / 2 && y >= fy - H + 1 && y <= fy + 1) return { pessoa: a }; }
     const [i, j] = this.m.geo.ladrilho(x, y);
     const z = this.m.zonaEm(Math.floor(i), Math.floor(j));
-    return z ? { zona: z.id } : null;
+    return z ? { zona: z.id, ladrilho: [Math.floor(i), Math.floor(j)] } : null;
   }
 
   destruir(): void {

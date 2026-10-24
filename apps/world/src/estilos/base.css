@@ -79,7 +79,17 @@ button:focus-visible { outline: 2px solid var(--ciano); outline-offset: 2px; }
 .arc-cartao ol { margin: 0; padding: 0; list-style: none; display: grid; gap: 3px; font-size: 13px; }
 .arc-cartao ol li { display: flex; gap: 8px; }
 .arc-cartao ol .q { font: 400 16px/1.1 var(--pixel); color: var(--texto-suave); flex: none; width: 4.6em; }
-.arc-carga { position: absolute; inset: 0; display: grid; place-items: center; font: 400 22px/1 var(--pixel); color: var(--texto-suave); background: #070815; }
+.arc-carga { position: absolute; inset: 0; display: grid; place-items: center; padding: 16px; text-align: center; font: 400 22px/1.2 var(--pixel); color: var(--texto-suave); background: #070815; }
+/* selo da fonte dos dados na etiqueta e aviso de conexão perdida (o mundo continua na tela) */
+.arc-selo { font: 400 11px/1 var(--titulo); padding: 3px 5px; color: #071018; background: #7dffa8; border: 2px solid #050611; }
+.arc-selo[data-s='sem-conexao'], .arc-selo[data-s='outra-aba'] { background: #ffb347; }
+.arc-selo[data-s='conectando'] { background: #a9aed6; }
+.arc-selo[data-s='simulado'] { background: #c9a7ff; }
+.arc-aviso { align-self: center; pointer-events: none; max-width: calc(100% - 20px); text-align: center; font: 400 20px/1.15 var(--pixel); color: #1d1300; background: #ffb347; border: 2px solid #050611; box-shadow: 0 0 0 2px #8a5a00; padding: 5px 10px; }
+/* o aviso de outra aba é um botão: recebe toque */
+.arc-aviso-toque { pointer-events: auto; cursor: pointer; }
+.arc-cartao { max-height: calc(100% - 64px); overflow-y: auto; }
+.arc-cartao .arc-link { appearance: none; background: none; border: 0; padding: 0; margin: 0; color: var(--ciano); font: inherit; text-align: left; cursor: pointer; text-decoration: underline; text-underline-offset: 2px; min-width: 0; }
 .arc-erro { margin: 16px; white-space: pre-wrap; font: 400 18px/1.3 var(--pixel); color: #ff8f80; }
 
 .arc-palco[data-celular='1'] .arc-ticker li:nth-last-child(n+2) { display: none; }
@@ -91,4 +101,6 @@ button:focus-visible { outline: 2px solid var(--ciano); outline-offset: 2px; }
 .arc-palco[data-celular='1'] .so-pc, .arc-palco[data-hud='enxuto'] .so-pc { display: none; }
 .arc-palco[data-celular='1'] .arc-etiqueta { font-size: 12px; padding: 3px 8px; }
 .arc-palco[data-celular='1'] .arc-etiqueta .num { font-size: 17px; }
+.arc-palco[data-celular='1'] .arc-selo { font-size: 9px; padding: 2px 4px; }
+.arc-palco[data-celular='1'] .arc-aviso { font-size: 18px; }
 @media (prefers-reduced-motion: reduce) { .arc-ticker li, .arc-precisa { animation: none; } }

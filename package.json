@@ -16,7 +16,7 @@
     "build:mundo": "vite build --config apps/world/vite.config.ts apps/world",
     "dev:servidor": "node --watch apps/server/src/main.ts",
     "servidor": "node apps/server/src/main.ts",
-    "test": "node --test \"packages/shared/src/**/*.test.ts\" \"apps/server/src/**/*.test.ts\"",
+    "test": "node --test \"packages/shared/src/**/*.test.ts\" \"apps/server/src/**/*.test.ts\" \"apps/world/src/**/*.test.ts\"",
     "typecheck": "tsc -p packages/shared/tsconfig.json && tsc -p apps/server/tsconfig.json && tsc -p apps/world/tsconfig.json",
     "checar:escrita": "node tools/checar-escrita.mjs",
     "doctor": "node apps/server/src/doctor.ts",

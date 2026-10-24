@@ -1,6 +1,6 @@
 // Esquema da configuração (arcadia.config.yaml). Os nomes seguem config/arcadia.config.exemplo.yaml.
 // Tudo que falta ganha o padrão; chave desconhecida vira aviso (o modo estrito só serve para achá-las).
-import { REGEX_ID_ALA, TIPOS_SALA, z } from '@arcadia/shared';
+import { REGEX_ID_ALA, TEMAS_ALA, TIPOS_SALA, z } from '@arcadia/shared';
 
 const QUALIDADES = ['baixo', 'medio', 'alto'] as const;
 
@@ -67,6 +67,8 @@ export function criarEsquemaConfig(estrito: boolean) {
           regras: z.array(z.string().min(1)).default([]),
           /** Opcional: tipo de sala padrão desta ala (web, app, video, backend, pesquisa, outro). */
           tipo: z.enum(TIPOS_SALA).optional(),
+          /** Opcional: tema do lote no mundo (equipe, agencia, estudio...). Sem ele, o mundo escolhe pelo conteúdo. */
+          tema: z.enum(TEMAS_ALA).optional(),
         }),
       )
       .default([]),

@@ -1,18 +1,26 @@
 // Doctor pelo terminal. Se o servidor estiver no ar, pergunta a ele (127.0.0.1, rota /doctor); senão, confere
 // sozinho: configuração, pasta de dados, banco, portas e fontes (só contagens e datas, nunca conteúdo).
-// Uso: node apps/server/src/doctor.ts [--config <arquivo>] [--json]
+// Uso: node apps/server/src/doctor.ts [--config <arquivo>] [--json]   (--ajuda mostra o uso sem ler nada)
 import http from 'node:http';
 import path from 'node:path';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { VERSAO_ESQUEMA } from '@arcadia/shared';
-import { carregarConfig, ErroConfig, explicarErroConfig, type ConfigCarregada } from './config/carregar.ts';
+import { carregarConfig, ErroConfig, explicarErroConfig, pastaDeDados, type ConfigCarregada } from './config/carregar.ts';
 import {
   coletarFontes, descreverConfig, descreverDados, formatarDiagnostico, infoDoBanco, protegerDiagnostico, protegerTextoDoctor, sondarPorta,
   versaoNode, type Diagnostico,
 } from './doctor/diagnostico.ts';
 import { ambienteAtual, expandir, type AmbienteCaminhos } from './util/caminhos.ts';
-import { lerArgumentos } from './util/args.ts';
+import { interpretarArgumentos } from './util/args.ts';
+
+const USO = [
+  'Arcadia doctor: confere configuração, pasta de dados, banco, portas e fontes (só contagens e datas).',
+  'Uso: node apps/server/src/doctor.ts [opções]',
+  '  --config <arquivo>   configuração (senão ARCADIA_CONFIG ou a do usuário; o exemplo do repositório não vale)',
+  '  --json               saída em JSON',
+  '  --ajuda, --help, -h  mostra este uso e sai',
+].join('\n');
 
 function perguntarAoServidor(porta: number, json: boolean): Promise<string | undefined> {
   return new Promise((resolver) => {
@@ -44,21 +52,31 @@ export async function diagnosticoLocal(carregada: ConfigCarregada, amb: Ambiente
     dados: { pasta: descreverDados(dirDados, amb), existe },
     portas: [
       { nome: 'Ingestão, saúde e doctor', host: config.servidor.ingestao.host, porta: config.servidor.ingestao.porta, estado: await sondarPorta('127.0.0.1', config.servidor.ingestao.porta) },
-      { nome: 'Visualização (snapshot, SSE e depuração)', host: '127.0.0.1', porta: config.servidor.visualizacao.porta, estado: await sondarPorta('127.0.0.1', config.servidor.visualizacao.porta) },
+      { nome: 'Visualização (mundo, snapshot, SSE e depuração)', host: '127.0.0.1', porta: config.servidor.visualizacao.porta, estado: await sondarPorta('127.0.0.1', config.servidor.visualizacao.porta) },
     ],
     fontes: await coletarFontes(config, amb, { agora }),
   };
   if (existe) {
     const b = infoDoBanco(path.join(dirDados, 'arcadia.sqlite'));
     if (b) d.dados.banco = b;
-    const sim = infoDoBanco(path.join(dirDados, 'arcadia-sim.sqlite'));
+    // O simulador grava longe dos dados reais (pastaDeDados); o banco dele fica lá.
+    const sim = infoDoBanco(path.join(pastaDeDados(config, amb, true), 'arcadia-sim.sqlite'));
     if (sim) d.dados.bancoSimulador = sim;
   }
   return d;
 }
 
 async function principal(): Promise<number> {
-  const args = lerArgumentos(process.argv.slice(2), ['json']);
+  const lido = interpretarArgumentos(process.argv.slice(2), { valores: ['config'], sinais: ['json'] });
+  if (lido.tipo === 'ajuda') {
+    console.log(USO);
+    return 0;
+  }
+  if (lido.tipo === 'erro') {
+    console.log(`${lido.mensagem} Use --ajuda para ver as opções.`);
+    return 1;
+  }
+  const args = lido.args;
   const amb = ambienteAtual();
   let carregada: ConfigCarregada;
   try {

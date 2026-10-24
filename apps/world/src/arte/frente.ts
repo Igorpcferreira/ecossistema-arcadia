@@ -2,7 +2,7 @@
 // Cada tipo tem largura e altura em pixels, um desenho estático e, quando anima, camadas com
 // quadros enumeráveis (assados na carga como no isométrico). A âncora é o meio da base.
 import { tom } from './cor.ts';
-import { CORES_ESTADO, ESTADOS_HOLO } from './estados.ts';
+import { CORES_ESTADO, ESTADOS_HOLO, MODOS_HOLO_CAPSULA, quadroHoloCapsula, type ModoHoloCapsula } from './estados.ts';
 import { elipse, estilo, linha, pixelsTexto, pxl, ret, textoPlano, type G } from './primitivas.ts';
 import type { CtxObjeto, InfoAnim } from './objetos.ts';
 
@@ -28,6 +28,36 @@ function holoFrente(g: G, x: number, y: number, w: number, h: number, cor: strin
   if (!ativo) return;
   for (let r = 0; r < Math.floor((h - 3) / 2); r++) { const len = 3 + ((r * 5 + k) % Math.max(2, w - 5)); ret(g, x + 2, y + 2 + r * 2, Math.min(w - 4, len), 1, r % 2 ? cor : '#e8fdff'); }
 }
+/** Holograma da cápsula de sala, de frente: texto (lendo), código (editando) ou terminal verde (comando). */
+export function holoCapsulaFrente(g: G, x: number, y: number, w: number, h: number, modo: ModoHoloCapsula, k: number): void {
+  const linhas = Math.floor((h - 3) / 2);
+  if (modo === 'terminal') {
+    g.globalAlpha = 0.88; ret(g, x, y, w, h, '#04110a'); g.globalAlpha = 1;
+    ret(g, x, y, w, 1, '#3dff7a'); ret(g, x, y + h - 1, w, 1, '#3dff7a');
+    for (let r = 0; r < linhas - 1; r++) {
+      const yy = y + 2 + r * 2, len = 2 + ((r * 3 + k * 2) % Math.max(2, w - 6));
+      pxl(g, x + 2, yy, '#a8ffbf'); ret(g, x + 4, yy, Math.min(w - 6, len), 1, r % 2 ? '#3dff7a' : '#a8ffbf');
+    }
+    const yy = y + 2 + (linhas - 1) * 2;
+    pxl(g, x + 2, yy, '#a8ffbf'); if (k % 2 === 0) ret(g, x + 4, yy - 1, 2, 2, '#3dff7a');
+    return;
+  }
+  g.globalAlpha = 0.35; ret(g, x, y, w, h, '#3ee0ff'); g.globalAlpha = 1;
+  ret(g, x, y, w, 1, '#bff8ff'); ret(g, x, y + h - 1, w, 1, '#bff8ff');
+  for (let r = 0; r < linhas; r++) {
+    const yy = y + 2 + r * 2;
+    if (modo === 'texto') {
+      // parágrafos: linhas quase cheias, a última de cada um mais curta
+      const curta = (r + k) % 3 === 2;
+      ret(g, x + 2, yy, w - 4 - (curta ? 4 + ((r + k) % 2) * 2 : 0), 1, r % 2 ? '#c9b8ff' : '#f1ecff');
+    } else {
+      // código: recuos, uma palavra-chave e o resto da linha
+      const recuo = [0, 2, 2, 4, 2, 0][(r + k) % 6], len = 2 + ((r * 5 + k) % Math.max(2, w - 7 - recuo));
+      ret(g, x + 2 + recuo, yy, 2, 1, '#ffcf4d'); ret(g, x + 5 + recuo, yy, Math.min(w - 7 - recuo, len), 1, r % 2 ? '#4ea8ff' : '#e8fdff');
+    }
+  }
+}
+
 function camadaHoloMesa(x: number, y: number, w: number, h: number): CamadaFrente {
   return {
     nome: 'holo', n: fixo(1 + ESTADOS_HOLO.length * 3),
@@ -160,10 +190,16 @@ export const FRENTE: Record<string, Frente> = {
   },
   luminaria: { w: 12, h: 38, desenho(g, _o, w, h) { ret(g, 5, 8, 2, h - 8, '#2a2c3a'); bloco(g, 1, 0, 10, 8, '#f2d8a8'); ret(g, 2, h - 2, 8, 2, '#2a2c3a'); }, luzes: () => [{ x: 6, y: 4, r: 30, cor: '#ffd9a0', int: 0.8 }] },
   pod: {
-    w: 34, h: 46,
-    desenho(g, _o, w, h) { bloco(g, 0, h - 4, w, 4, '#3a3550'); bloco(g, 1, 8, w - 2, h - 12, '#8a7fb3'); ret(g, 3, 10, w - 6, h - 16, '#3a3558'); bloco(g, 5, h - 14, w - 10, 3, '#ece9f5'); },
+    w: 52, h: 46,
+    // de frente, larga o bastante para o nome caber na placa de cima (até 12 letras), que é parte da cápsula:
+    // placa nenhuma flutua nem bate noutra. Bancada, tela, holograma e placa são camadas: quem senta lá dentro
+    // fica inteiro entre o fundo e a bancada (vistaCorte), à direita da tela e do holograma, com o ícone ao lado
+    // da cabeça
+    desenho(g, _o, w, h) { bloco(g, 0, h - 4, w, 4, '#3a3550'); bloco(g, 1, 8, w - 2, h - 12, '#8a7fb3'); ret(g, 3, 10, w - 6, h - 16, '#3a3558'); },
     camadas: [
-      { nome: 'tela', n: fixo(2), desenhar: (g, k, _o, w, h) => ret(g, w / 2 - 4, h - 20, 8, 5, k ? '#3ee0ff' : '#1a1830'), quadro: (_o, a) => (a.presente ? 1 : 0), emEspera: 0 },
+      { nome: 'bancada', n: fixo(1), desenhar: (g, _k, _o, w, h) => { bloco(g, 5, h - 14, w - 10, 3, '#ece9f5'); ret(g, 6, h - 11, w - 12, 6, '#2a2840'); ret(g, 6, h - 11, w - 12, 1, '#4b4568'); }, quadro: () => 0, emEspera: 0 },
+      { nome: 'tela', n: fixo(2), desenhar: (g, k, _o, _w, h) => { ret(g, 7, h - 19, 8, 5, k ? '#3ee0ff' : '#1a1830'); ret(g, 10, h - 14, 2, 1, '#545b76'); }, quadro: (_o, a) => (a.presente ? 1 : 0), emEspera: 0 },
+      { nome: 'holo', n: fixo(MODOS_HOLO_CAPSULA.length * 3), desenhar: (g, k) => holoCapsulaFrente(g, 4, 12, 14, 13, MODOS_HOLO_CAPSULA[Math.floor(k / 3)], k % 3), quadro: (_o, a) => quadroHoloCapsula(a.ativo, a.t) },
       { nome: 'placa', n: fixo(2), variante: (o) => s(o, 'nome'), desenhar: (g, k, o, w) => { const nome = s(o, 'nome'); const { largura } = pixelsTexto(nome); const x = Math.round(w / 2 - largura / 2); ret(g, x - 2, 0, largura + 4, 8, '#14122a'); ret(g, x - 2, 0, largura + 4, 1, k ? '#c9a7ff' : '#4b4568'); textoPlano(g, nome, x, 2, k ? '#e9dcff' : '#8a7fb3'); }, quadro: (_o, a) => (a.presente ? 1 : 0), emEspera: 0 },
     ],
     luzes: (_o, w, h) => [{ x: w / 2, y: h - 18, r: 18, cor: '#c9a7ff', int: 0.35 }],

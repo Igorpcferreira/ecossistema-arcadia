@@ -77,10 +77,10 @@ test('doctor local (servidor desligado) explica em português', async () => {
   try {
     const amb: AmbienteCaminhos = { casa: pasta.caminho, variaveis: { LOCALAPPDATA: path.join(pasta.caminho, 'local') }, windows: process.platform === 'win32', cwd: pasta.caminho };
     const { config, avisos } = validarConfig({ versao: 1, fontes: { openmausbot: { ligado: false } }, servidor: { ingestao: { porta: 1 }, visualizacao: { porta: 2 } } }, amb);
-    const carregada: ConfigCarregada = { config, arquivo: 'x.yaml', descricao: 'x.yaml', origem: 'exemplo', avisos };
+    const carregada: ConfigCarregada = { config, arquivo: 'x.yaml', descricao: 'x.yaml', origem: 'argumento', avisos };
     const d = await diagnosticoLocal(carregada, amb);
     const texto = formatarDiagnostico(d);
-    for (const trecho of ['Não está rodando', 'exemplo genérico do repositório', 'ainda não existe', 'OpenMausBot: desligado na configuração', 'Transcrições do Claude Code: pasta não encontrada', 'Hooks do Claude Code: desligado']) {
+    for (const trecho of ['Não está rodando', 'x.yaml (indicada em --config)', 'ainda não existe', 'OpenMausBot: desligado na configuração', 'Transcrições do Claude Code: pasta não encontrada', 'Hooks do Claude Code: desligado']) {
       assert.ok(texto.includes(trecho), `faltou "${trecho}":\n${texto}`);
     }
     assert.match(texto, /Arcadia doctor, \d{2}\/\d{2}\/\d{4} \d{2}:\d{2}/);

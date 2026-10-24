@@ -1,6 +1,7 @@
 // Câmera: centro (x, y) em pixels de arte, escala inteira (pixels físicos por pixel de arte),
 // origem da tela sempre arredondada (sem tremer) e o diretor do modo aquário, que passeia
-// sozinho pelas zonas e dá prioridade a quem espera você. Depois de 25 s sem toque, o
+// sozinho pelas zonas e dá prioridade a quem espera você: espera nova leva a câmera até ela
+// na hora (em menos de 2 s), sem esperar a troca de plano. Depois de 25 s sem toque, o
 // aquário volta sozinho.
 import { semeado } from '../cena/mundo.ts';
 
@@ -9,10 +10,14 @@ export interface AlvosCamera {
   alvoZona(id: string): [number, number] | null;
   /** Alguém que precisa de atenção (esperando você), se houver. */
   alvoUrgente(): [number, number] | null;
+  /** Todos que esperam você agora (id e ponto), do pedido mais antigo para o mais novo. */
+  urgentes?(): { id: string; x: number; y: number }[];
   /** Foco forçado (obra, sessão que chega e acorda uma ala), se houver. */
   alvoForcado(): [number, number] | null;
   /** Ala em espera: o passeio passa menos por ela. */
   emEspera?(id: string): boolean;
+  /** Borda de baixo do chão na coluna x da tela (o enquadramento da carga no celular não mostra o vazio). */
+  fundoEm?(x: number): number;
   limites(vw: number, vh: number): { minX: number; maxX: number; minY: number; maxY: number };
 }
 
@@ -29,6 +34,12 @@ export class Camera {
   cortes = false;
   ultimoToque = -1e9;
   private proximoPlano = 7;
+  /** Esperas que o aquário já mostrou; a que não está aqui é nova. */
+  private esperasVistas = new Set<string>();
+  /** Espera nova que a câmera segue até o fim do plano. */
+  private esperaSeguida: string | null = null;
+  /** Segundos de movimento rápido (a ida até uma espera nova). */
+  private depressa = 0;
   private indice = 0;
   private rng: () => number;
   roteiro: string[];
@@ -62,11 +73,22 @@ export class Camera {
       if (!this.travada && performance.now() - this.ultimoToque > 25000) { this.aquario = true; this.proximoPlano = 0; }
     } else {
       this.proximoPlano -= dt;
+      // espera nova: a câmera vai até ela já e fica nela o plano inteiro (antes de chegada ou obra)
+      const lista = this.alvos.urgentes?.() ?? [];
+      for (const id of this.esperasVistas) if (!lista.some((u) => u.id === id)) this.esperasVistas.delete(id);
+      const novas = lista.filter((u) => !this.esperasVistas.has(u.id));
+      if (novas.length) {
+        for (const u of novas) this.esperasVistas.add(u.id);
+        this.esperaSeguida = novas[novas.length - 1].id; this.proximoPlano = Math.max(this.proximoPlano, 9); this.depressa = 2;
+      }
+      const seguida = this.esperaSeguida ? lista.find((u) => u.id === this.esperaSeguida) : undefined;
+      if (!seguida || this.proximoPlano <= 0) this.esperaSeguida = null;
       // quem espera você vem antes de qualquer chegada ou obra
       const urgente = this.alvos.alvoUrgente();
       const forcado = this.alvos.alvoForcado();
       seguindo = !!forcado && !urgente;
-      if (forcado && urgente) { this.ax = urgente[0]; this.ay = urgente[1]; this.proximoPlano = Math.max(this.proximoPlano, 2); }
+      if (seguida && this.esperaSeguida) { this.ax = seguida.x; this.ay = seguida.y; }
+      else if (forcado && urgente) { this.ax = urgente[0]; this.ay = urgente[1]; this.proximoPlano = Math.max(this.proximoPlano, 2); }
       else if (forcado) { this.ax = forcado[0]; this.ay = forcado[1]; }
       else if (this.proximoPlano <= 0) {
         this.proximoPlano = 8 + this.rng() * 4;
@@ -80,7 +102,8 @@ export class Camera {
         }
       }
     }
-    const k = this.cortes ? 1 : Math.min(1, dt * (this.aquario ? (seguindo ? 3 : 1.1) : 8));
+    this.depressa = Math.max(0, this.depressa - dt);
+    const k = this.cortes ? 1 : Math.min(1, dt * (this.aquario ? (seguindo || this.depressa > 0 ? 3 : 1.1) : 8));
     this.x += (this.ax - this.x) * k; this.y += (this.ay - this.y) * k;
     this.limitar();
   }

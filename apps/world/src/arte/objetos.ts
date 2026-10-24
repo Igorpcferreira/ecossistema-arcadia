@@ -3,7 +3,7 @@
 // que a prancha redesenhava a cada quadro viraram listas de quadros com índice numérico.
 import type { Estado, ValorProp } from '../cena/formato.ts';
 import { tom } from './cor.ts';
-import { CORES_ESTADO, ESTADOS_HOLO } from './estados.ts';
+import { CORES_ESTADO, ESTADOS_HOLO, MODOS_HOLO_CAPSULA, quadroHoloCapsula, type ModoHoloCapsula } from './estados.ts';
 import { anel, elipse, estilo, linha, poli, pixelsTexto, pxl, ret, textoPlano, type G, type Ponto, type Proj } from './primitivas.ts';
 
 export interface CtxObjeto {
@@ -122,6 +122,46 @@ export function holo(c: G, Q: Proj, a: number, bb: number, jj: number, z0: numbe
     const len = 0.22 + (((k * 7 + Math.floor(t * 3)) % 6) / 10);
     const s0 = Q(a + 0.07, jj, zz), e = Q(Math.min(bb - 0.06, a + 0.07 + len * (bb - a)), jj, zz);
     linha(c, s0[0], s0[1], e[0], e[1], k % 2 ? cor : '#e8fdff');
+  }
+}
+
+/**
+ * Holograma da cápsula de sala, em pé sobre a tela da bancada (plano de j fixo, de i = a até bb):
+ * texto quando lê, código quando edita, terminal verde quando roda comando (seção 4.3).
+ */
+export function holoCapsula(c: G, Q: Proj, a: number, bb: number, jj: number, z0: number, z1: number, modo: ModoHoloCapsula, k: number): void {
+  const p1 = Q(a, jj, z1), p2 = Q(bb, jj, z1), p3 = Q(bb, jj, z0), p4 = Q(a, jj, z0);
+  const terminal = modo === 'terminal';
+  c.globalAlpha = terminal ? 0.85 : 0.32;
+  poli(c, [p1, p2, p3, p4], terminal ? '#04110a' : '#3ee0ff');
+  c.globalAlpha = 1;
+  const borda = terminal ? '#3dff7a' : '#bff8ff';
+  linha(c, p1[0], p1[1], p2[0], p2[1], borda); linha(c, p4[0], p4[1], p3[0], p3[1], borda);
+  const n = Math.floor((z1 - z0 - 3) / 2.4), lar = bb - a;
+  for (let r = 0; r < n; r++) {
+    const zz = z1 - 3 - r * 2.4;
+    let ini = a + 0.08 * lar, fim: number, cor: string;
+    if (modo === 'texto') {
+      // parágrafos: linhas quase cheias, a última de cada um mais curta
+      fim = bb - 0.08 * lar - ((r + k) % 3 === 2 ? 0.3 * lar : 0);
+      cor = r % 2 ? '#c9b8ff' : '#f1ecff';
+    } else if (modo === 'codigo') {
+      // código: recuo, uma palavra-chave em amarelo e o resto da linha
+      ini += [0, 0.12, 0.12, 0.24, 0.12, 0][(r + k) % 6] * lar;
+      const s0 = Q(ini, jj, zz), s1 = Q(ini + 0.12 * lar, jj, zz); linha(c, s0[0], s0[1], s1[0], s1[1], '#ffcf4d');
+      ini += 0.18 * lar;
+      fim = Math.min(bb - 0.06 * lar, ini + (0.15 + (((r * 5 + k) % 5) / 10)) * lar);
+      cor = r % 2 ? '#4ea8ff' : '#e8fdff';
+    } else {
+      // terminal: o sinal do prompt e a saída; o cursor pisca na última linha
+      const s0 = Q(ini, jj, zz); pxl(c, s0[0], s0[1], '#a8ffbf');
+      ini += 0.12 * lar;
+      if (r === n - 1) { if (k % 2 === 0) { const q = Q(ini, jj, zz); ret(c, q[0], q[1] - 1, 2, 2, '#3dff7a'); } continue; }
+      fim = Math.min(bb - 0.06 * lar, ini + (0.2 + (((r * 3 + k * 2) % 6) / 10)) * lar);
+      cor = r % 2 ? '#3dff7a' : '#a8ffbf';
+    }
+    const s0 = Q(ini, jj, zz), e = Q(fim, jj, zz);
+    linha(c, s0[0], s0[1], e[0], e[1], cor);
   }
 }
 
@@ -601,6 +641,8 @@ export const TIPOS: Record<string, TipoObjeto> = {
     },
     camadas: [
       { nome: 'tela', n: fixo(2), desenhar: (g, Q, k) => { const tl = Q(1, 1.32, 18); ret(g, tl[0] - 3, tl[1] - 3, 7, 4, k ? '#3ee0ff' : '#1a1830'); }, quadro: (_o, an) => (an.presente ? 1 : 0), emEspera: 0 },
+      // holograma do estado de quem senta (texto, código ou terminal), em pé sobre a tela, à esquerda dele
+      { nome: 'holo', n: fixo(MODOS_HOLO_CAPSULA.length * 3), desenhar: (g, Q, k) => holoCapsula(g, Q, 0.5, 1.4, 1.26, 22, 40, MODOS_HOLO_CAPSULA[Math.floor(k / 3)], k % 3), quadro: (_o, an) => quadroHoloCapsula(an.ativo, an.t) },
       {
         nome: 'z', n: fixo(8),
         desenhar: (g, Q, k) => { const p = Q(1.6, 0.6, 40 + ((k + 0.5) / 8) * 8); textoPlano(g, 'Z', p[0], p[1], '#b9b0dc'); },
@@ -609,7 +651,7 @@ export const TIPOS: Record<string, TipoObjeto> = {
       },
       {
         nome: 'placa', n: fixo(2), variante: (o) => s(o, 'nome'),
-        desenhar: (g, Q, k, o) => { const nome = s(o, 'nome'); const p = Q(1, 1, 44); const { largura } = pixelsTexto(nome); ret(g, p[0] - largura / 2 - 3, p[1] - 4, largura + 6, 9, '#14122a'); ret(g, p[0] - largura / 2 - 3, p[1] - 4, largura + 6, 1, k ? '#c9a7ff' : '#4b4568'); textoPlano(g, nome, p[0] - largura / 2, p[1] - 2, k ? '#e9dcff' : '#8a7fb3'); },
+        desenhar: (g, Q, k, o) => { const nome = s(o, 'nome'); const p = Q(1, 1, 54); const { largura } = pixelsTexto(nome); ret(g, p[0] - largura / 2 - 3, p[1] - 4, largura + 6, 9, '#14122a'); ret(g, p[0] - largura / 2 - 3, p[1] - 4, largura + 6, 1, k ? '#c9a7ff' : '#4b4568'); textoPlano(g, nome, p[0] - largura / 2, p[1] - 2, k ? '#e9dcff' : '#8a7fb3'); },
         quadro: (_o, an) => (an.presente ? 1 : 0),
         emEspera: 0,
       },

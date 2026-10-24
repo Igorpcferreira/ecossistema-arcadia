@@ -7,6 +7,7 @@
 //   ?local=0 (força o cenário genérico mesmo em desenvolvimento)   ?debug=1   ?zoom=-1 (passos de zoom)   ?pausado=1 (simulação parada, para testes)
 //   ?ocio=rapido (pausa em 15 s e sono em 45 s, para ver uma ala voltar à espera sem esperar 20 min)
 //   ?movimento=reduzido|normal (sem o parâmetro, segue a preferência do sistema)
+//   ?fonte=servidor|simulador (padrão servidor: o snapshot e o SSE do servidor do Arcadia; simulador: o do navegador, como no /prototipos)
 import type { NomePreset } from './qualidade/presets.ts';
 import type { PasseMao } from './arte/personagens.ts';
 import type { ModoRoupa } from './cena/roupa.ts';
@@ -34,6 +35,7 @@ export interface OpcoesUrl {
   ocio: 'real' | 'rapido';
   movimento: 'auto' | 'reduzido' | 'normal';
   roupa: ModoRoupa;
+  fonte: 'servidor' | 'simulador';
 }
 
 export function lerOpcoes(qs: URLSearchParams): OpcoesUrl {
@@ -66,5 +68,6 @@ export function lerOpcoes(qs: URLSearchParams): OpcoesUrl {
     ocio: qs.get('ocio') === 'rapido' ? 'rapido' : 'real',
     movimento: qs.get('movimento') === 'reduzido' ? 'reduzido' : qs.get('movimento') === 'normal' ? 'normal' : 'auto',
     roupa: qs.get('roupa') === 'variante' ? 'variante' : qs.get('roupa') === 'base' ? 'base' : 'auto',
+    fonte: qs.get('fonte') === 'simulador' ? 'simulador' : 'servidor',
   };
 }

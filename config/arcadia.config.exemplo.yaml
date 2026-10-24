@@ -70,6 +70,9 @@ alas:
     nome: Estúdio
     cor: "#ffb347"
     tipo: video
+    # Opcional: o tema do lote no mundo (móveis, objetos e cores). Um destes: equipe, agencia, estudio, corporativo,
+    # laboratorio, pessoal, bastidores, produtos ou academia. Sem ele, o mundo escolhe pelas salas e pelos bots da ala.
+    # tema: estudio
     regras: ["~/projetos/estudio-*/**", "~/videos/**"]
   - id: produtos
     nome: Produtos

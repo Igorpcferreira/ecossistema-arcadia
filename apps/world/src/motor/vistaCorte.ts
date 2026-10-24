@@ -7,8 +7,8 @@ import type { Mundo, Pessoa } from '../cena/mundo.ts';
 import type { Aparencia, Estado, Pose, Zona } from '../cena/formato.ts';
 import { Atlas, type Quadro } from './texturas.ts';
 import type { AlvosCamera, Camera } from './camera.ts';
-import { TINT_APAGADO, TINT_PISO_ESPERA, TINT_RECARGA, luzLetreiro, mulCor, type OpcoesVista, type Vista } from './vistaIso.ts';
-import { cp, mistura, numeroCor, tom, usarPaleta } from '../arte/cor.ts';
+import { TINT_APAGADO, TINT_PISO_ESPERA, TINT_RECARGA, TINT_TELA_APAGADA, luzLetreiro, mulCor, type OpcoesVista, type Vista } from './vistaIso.ts';
+import { cp, mistura, numeroCor, paletaAtual, tom, usarPaleta } from '../arte/cor.ts';
 import { frenteDe, type Frente } from '../arte/frente.ts';
 import type { CtxObjeto, InfoAnim } from '../arte/objetos.ts';
 import { DIM, INDICE_POSE, INDICE_ROSTO, POSES, ROSTOS, desenharPersonagem, desenharRosto, dyPose, quadroPose } from '../arte/personagens.ts';
@@ -16,11 +16,15 @@ import { desenharBrilho, desenharCarga, desenharDrone, desenharIcone, desenharIc
 import { ICONES } from '../arte/estados.ts';
 import { pixelsTexto, pxl, ret, textoPlano, type G } from '../arte/primitivas.ts';
 
-const MARG = 10, RW = 210, GAP = 4, POCO = 26, RH = 90, LAJE = 8, TOPO = 40, PAREDE = 56;
+const MARG = 10, RW = 210, GAP = 4, POCO = 26, RH = 98, LAJE = 8, TOPO = 40, PAREDE = 64;
+/** Altura do letreiro da sala na parede (acima do topo das cápsulas do fundo, mesmo em dobro). */
+const LETREIRO_Y = 4;
 const ESTADOS_ICONE = Object.keys(ICONES) as Estado[];
 
 interface Sala { z: Zona; x: number; y: number }
-interface VisObj { o: Mundo['objetos'][number]; f: Frente; base: Sprite; camadas: { s: Sprite; ids: Int32Array; quadro: (o: CtxObjeto, a: InfoAnim) => number; emEspera?: number | 'anima' }[]; x: number; y: number; limiar: number; apagado: boolean; noite: number }
+interface CamadaVis { nome: string; s: Sprite; ids: Int32Array; quadro: (o: CtxObjeto, a: InfoAnim) => number; emEspera?: number | 'anima' }
+/** `frente`: na cápsula de sala, os objetos que ficam na frente do vão dela no corte (ficam translúcidos com gente dentro). */
+interface VisObj { o: Mundo['objetos'][number]; f: Frente; base: Sprite; camadas: CamadaVis[]; x: number; y: number; limiar: number; apagado: boolean; noite: number; frente?: VisObj[]; alpha?: number }
 interface VisPessoa { corpo: Sprite; rosto: Sprite | null; icone: Sprite; cabine: Sprite; apIdx: number; olhoIdx: number; androide: boolean; xAnt: number; esp: boolean }
 
 const COR_PISO: Record<string, [string, string]> = {
@@ -43,6 +47,16 @@ export class VistaCorte implements Vista {
   private pulsosC = new Container();
   private ordenada = new Container();
   private efeitosC = new Container();
+  /** Partículas (fumaça, confete, faíscas): sem a tinta da noite, para a fumaça do erro aparecer de noite. */
+  private particulasC = new Container();
+  /** Neons: embaixo das pessoas (nenhuma placa cobre cabeça). */
+  private placasPodC = new Container();
+  /** Ícones de estado das pessoas: por cima de tudo, até das placas (emitem luz: a noite não escurece). */
+  private iconesP = new Container();
+  /** Cápsula de sala em cada ladrilho que ela ocupa (quem senta nela é desenhado no vão dela). */
+  private podEm = new Map<string, VisObj>();
+  /** Objetos que ficam translúcidos neste quadro (na frente de uma cápsula ocupada). */
+  private translucidos = new Set<VisObj>();
   private luzC = new Container();
   /** Luz ambiente da noite, sprite por sprite (olhos, peito e ícones emitem e ficam fora). */
   private corNoite = 0xffffff;
@@ -65,6 +79,9 @@ export class VistaCorte implements Vista {
   private idCarga = new Map<Carga, number>();
   private idBrilho = new Map<string, number>();
   private idPonto = 0; private idCabine = 0;
+  /** Obra de sala nova no corte: andaime de frente (8 alturas), três drones e a barra de progresso. */
+  private idsObra: number[] = []; private idBarraF = 0; private idBarraC = 0;
+  private obraPool: { andaime: Sprite; drones: Sprite[]; fundo: Sprite; cheia: Sprite }[] = [];
   private pool = { pulsos: [] as Sprite[], drones: [] as Sprite[][], minis: [] as Sprite[][], particulas: [] as Sprite[], brilhos: [] as Sprite[] };
   private brilhosFixos: { s: Sprite; x: number; y: number; r: number; int: number; zona: string | null; limiar: number; recarga?: Mundo['objetos'][number] }[] = [];
   private textoEntregas: { digitos: Sprite[]; x: number; y: number } | null = null;
@@ -90,7 +107,8 @@ export class VistaCorte implements Vista {
     this.pocoX = MARG + RW + GAP;
     this.alvos = {
       alvoZona: (id) => { const s = this.salaPorZona.get(id); return s ? [this.W / 2, s.y + RH / 2] : null; },
-      alvoUrgente: () => { const p = m.pessoas.find((a) => a.visivel && a.estado === 'esperando'); return p ? this.posPessoa(p) : null; },
+      alvoUrgente: () => { const p = m.urgentes ? m.urgentes.find((a) => a.visivel) : m.pessoas.find((a) => a.visivel && a.estado === 'esperando'); return p ? this.posPessoa(p) : null; },
+      urgentes: () => (m.urgentes ?? m.pessoas.filter((a) => a.estado === 'esperando')).filter((a) => a.visivel).map((a) => { const [x, y] = this.posPessoa(a); return { id: a.id, x, y }; }),
       alvoForcado: () => {
         const f = m.focoForcado;
         if (!f || f.ate <= m.relogio.agora) return null;
@@ -109,7 +127,8 @@ export class VistaCorte implements Vista {
     };
     this.ordenada.sortableChildren = true;
     this.palco.addChild(this.mundoC);
-    for (const c of [this.fundo, this.esperaC, this.pulsosC, this.ordenada, this.efeitosC, this.iconesEsperaC, this.apagoes]) this.mundoC.addChild(c);
+    this.iconesP.sortableChildren = true;
+    for (const c of [this.fundo, this.esperaC, this.pulsosC, this.placasPodC, this.ordenada, this.efeitosC, this.particulasC, this.iconesP, this.iconesEsperaC, this.apagoes]) this.mundoC.addChild(c);
     this.palco.addChild(this.luzC);
   }
 
@@ -130,9 +149,25 @@ export class VistaCorte implements Vista {
     const v = Math.max(0, Math.min(1, (j - z.j0) / (z.j1 - z.j0 + 1)));
     return [s.x + 12 + u * (RW - 24), s.y + PAREDE + 4 + v * (RH - PAREDE - 8)];
   }
+  /** Escala do letreiro de uma sala: 2 no celular (ler de longe), 1 no resto ou quando o nome em dobro não cabe na parede. */
+  private escLetreiro(nome: string): number { return this.op.placasGrandes && pixelsTexto(nome).largura * 2 + 8 <= RW - 24 ? 2 : 1; }
+  /** Largura e altura do letreiro de uma sala, com a moldura. */
+  private tamLetreiro(nome: string): [number, number] { const e = this.escLetreiro(nome); return [pixelsTexto(nome).largura * e + 8, 5 * e + 6]; }
+  /** Telas de site da parede (tema de agência) que ficam livres do letreiro e do ícone de stand-by: com o letreiro em dobro, as primeiras saem. */
+  private telasAgencia(s: Sala): number[] {
+    if (s.z.tema !== 'agencia') return [];
+    const fim = 6 + this.tamLetreiro(s.z.nome)[0] + 2 + 9;
+    return [0, 1, 2, 3].filter((k) => 72 + k * 34 >= fim);
+  }
+
+  /** Cápsula de sala em que alguém está sentado (parado dentro dela), se estiver. */
+  private podDe(p: Pessoa): VisObj | undefined { return p.andando ? undefined : this.podEm.get(`${Math.floor(p.pi)},${Math.floor(p.pj)}`); }
   /** Posição dos pés de alguém no corte (no poço do elevador quando está no corredor). */
   private posPessoa(p: Pessoa): [number, number] {
     const z = this.m.zonaEm(Math.floor(p.pi), Math.floor(p.pj));
+    // sentado numa cápsula: no vão dela, à direita da tela e do holograma
+    const pod = z ? this.podDe(p) : undefined;
+    if (pod) return [pod.x + 8, pod.y - 1];
     if (z) { const [x, y] = this.ladoNaZona(z, p.pi, p.pj); return [x, y - p.z * 0.6]; }
     const so = (p.zonaOrigem && this.salaPorZona.get(p.zonaOrigem)) || this.salas[0];
     const sd = (p.zonaDestino && this.salaPorZona.get(p.zonaDestino)) || so;
@@ -149,29 +184,17 @@ export class VistaCorte implements Vista {
     const extras: CtxObjeto[] = [{ tipo: 'pod', i: 0, j: 0, props: { nome: m.cena.textos.obra.salaNome } }, { tipo: 'planta', i: 0, j: 0, props: {} }];
     for (const o of [...m.objetos, ...extras]) passos.push(() => this.assarObjeto(o));
     const aps = new Set<string>(m.pessoas.map((p) => p.aparencia)); aps.add(m.cena.textos.obra.agente.aparencia);
-    const lista = [...aps].filter((k) => m.cena.aparencias[k]);
-    lista.forEach((k, i) => this.apIndice.set(k, i));
-    this.idsPessoa = new Int32Array(lista.length * POSES.length * 4 * 2).fill(-1);
-    for (const k of lista) passos.push(() => {
-      usarPaleta('fria');
-      const ap = m.cena.aparencias[k], ai = this.apIndice.get(k)!, { w, h } = DIM[tam];
-      POSES.forEach((ps, pi) => { for (let q = 0; q < ps.n; q++) for (let c = 0; c < 2; c++) this.idsPessoa[((ai * POSES.length + pi) * 4 + q) * 2 + c] = A.assar(`p|${k}|${tam}|${this.op.maoFeita}|${ps.pose}|${q}|${c}`, w, h, w / 2, h - 1, (g) => desenharPersonagem(g, ap, ps.pose, q, c === 1, tam, this.op.maoFeita)); });
-      usarPaleta(this.op.paleta);
-    });
-    const olhos = [...new Set(lista.map((k) => m.cena.aparencias[k]).filter((ap): ap is Extract<Aparencia, { tipo: 'androide' }> => ap?.tipo === 'androide').map((ap) => ap.olho ?? '#7ef3ff'))];
-    olhos.forEach((o, i) => this.olhoIndice.set(o, i));
-    this.idsRosto = new Int32Array(olhos.length * ROSTOS.length).fill(-1);
+    for (const k of m.aparenciasPrevistas) aps.add(k);
+    for (const k of [...aps].filter((x) => m.cena.aparencias[x])) passos.push(() => { this.garantirAparencia(k); });
     passos.push(() => {
       usarPaleta('fria');
-      const { w, h } = DIM[tam];
-      olhos.forEach((olho, oi) => ROSTOS.forEach((ro, ri) => { this.idsRosto[oi * ROSTOS.length + ri] = A.assar(`r|${olho}|${tam}|${ro}`, w, h, w / 2, h - 1, (g) => desenharRosto(g, { tipo: 'androide', papel: '#888888', olho }, ro, tam)); }));
       for (const e of ESTADOS_ICONE) this.idIcone.set(e, A.assar(`icone|${e}`, 9, 9, 0, 0, (g) => desenharIcone(g, e)));
       this.idIconeEspera = A.assar('icone|esperaAla', 9, 9, 0, 0, (g) => desenharIconeEsperaAla(g));
       const coresDrone = new Set<string>(['#ffb347', '#7dffa8', '#f2b45a', '#f2c230']);
       const coresMini = new Set<string>(['#e0704f']);
       for (const ap of Object.values(m.cena.aparencias)) if (ap.tipo === 'androide') { coresDrone.add(ap.papel); coresMini.add(ap.papel); }
-      for (const c of coresDrone) this.idsDrone.set(c, [0, 1].map((q) => A.assar(`drone|${c}|${q}`, 14, 10, 0, 0, (g) => desenharDrone(g, c, q))) as [number, number]);
-      for (const c of coresMini) this.idsMini.set(c, [0, 1].map((q) => A.assar(`mini|${c}|${q}`, 12, 12, 0, 0, (g) => desenharMini(g, c, q))) as [number, number]);
+      for (const c of coresDrone) this.garantirDrone(c);
+      for (const c of coresMini) this.garantirMini(c);
       for (const t of ['envelope', 'cubo', 'check'] as Carga[]) this.idCarga.set(t, A.assar(`carga|${t}`, 9, 7, 4, 0, (g) => desenharCarga(g, t)));
       this.idPonto = A.assar('ponto', 1, 1, 0, 0, (g) => ret(g, 0, 0, 1, 1, '#ffffff'));
       const { h: HP } = DIM[tam];
@@ -182,11 +205,11 @@ export class VistaCorte implements Vista {
       for (const z of m.zonas) brilhos.add(`${z.cor}|36`);
       for (const c of coresDrone) brilhos.add(`${c}|12`);
       for (const o of [...m.objetos, ...extras]) { const f = frenteDe(o.tipo); for (const L of f.luzes?.(o, f.w, f.h) ?? []) brilhos.add(`${L.cor}|${L.r}`); }
-      for (const k of brilhos) { const [cor, rs] = k.split('|'); const r = Number(rs); this.idBrilho.set(k, A.assar(`brilho|${k}`, r * 2, r * 2, r, r, (g) => desenharBrilho(g, cp(cor), r))); }
+      for (const k of brilhos) this.garantirBrilho(k);
       // letreiro de cada sala apagado (ala em espera), por cima do aceso do fundo
       for (const s of this.salas) {
-        const z = s.z, { largura } = pixelsTexto(z.nome), w = largura + 8, h = 11, c = mistura(z.cor, '#20253c', 0.74);
-        this.idsLetreiroOff.set(z.id, A.assar(`letreiroSala|${z.id}|off`, w, h, 0, 0, (g) => { ret(g, 0, 0, w, h, '#0c0e1f'); ret(g, 0, 0, w, 1, c); ret(g, 0, h - 1, w, 1, c); textoPlano(g, z.nome, 4, 3, c); }));
+        const z = s.z, [w, h] = this.tamLetreiro(z.nome), e = this.escLetreiro(z.nome), c = mistura(z.cor, '#20253c', 0.74);
+        this.idsLetreiroOff.set(z.id, A.assar(`letreiroSala|${z.id}|off|${e}`, w, h, 0, 0, (g) => { ret(g, 0, 0, w, h, '#0c0e1f'); ret(g, 0, 0, w, 1, c); ret(g, 0, h - 1, w, 1, c); textoPlano(g, z.nome, 4, 3 * e, c, e); }));
       }
     });
     let feito = 0, ultimo = performance.now();
@@ -196,6 +219,63 @@ export class VistaCorte implements Vista {
     const uso = A.uso();
     Object.assign(this.medidas, { atlasMb: uso.mb, atlasOcupacao: uso.ocupacao, quadrosAtlas: uso.quadros, assarMs: performance.now() - tIni, assarDesenhoMs: A.tempos.desenho, assarAparoMs: A.tempos.aparar, assarCopiaMs: A.tempos.copia });
     this.montarFixos();
+  }
+
+  /** Assa (na carga ou depois dela) os quadros de uma aparência e devolve o índice dela. */
+  private garantirAparencia(k: string): number {
+    const ja = this.apIndice.get(k);
+    if (ja !== undefined) return ja;
+    const ap = this.m.cena.aparencias[k];
+    if (!ap) return 0;
+    const ai = this.apIndice.size, tam = this.op.tam, bloco = POSES.length * 4 * 2;
+    this.apIndice.set(k, ai);
+    if (this.idsPessoa.length < (ai + 1) * bloco) { const novo = new Int32Array((ai + 1) * bloco).fill(-1); novo.set(this.idsPessoa); this.idsPessoa = novo; }
+    const ant = paletaAtual(); usarPaleta('fria');
+    const { w, h } = DIM[tam];
+    POSES.forEach((ps, pi) => { for (let q = 0; q < ps.n; q++) for (let c = 0; c < 2; c++) this.idsPessoa[((ai * POSES.length + pi) * 4 + q) * 2 + c] = this.atlas.assar(`p|${k}|${tam}|${this.op.maoFeita}|${ps.pose}|${q}|${c}`, w, h, w / 2, h - 1, (g) => desenharPersonagem(g, ap, ps.pose, q, c === 1, tam, this.op.maoFeita)); });
+    usarPaleta(ant);
+    if (ap.tipo === 'androide') this.garantirOlho(ap.olho ?? '#7ef3ff');
+    return ai;
+  }
+  private garantirOlho(olho: string): number {
+    const ja = this.olhoIndice.get(olho);
+    if (ja !== undefined) return ja;
+    const oi = this.olhoIndice.size, tam = this.op.tam;
+    this.olhoIndice.set(olho, oi);
+    if (this.idsRosto.length < (oi + 1) * ROSTOS.length) { const novo = new Int32Array((oi + 1) * ROSTOS.length).fill(-1); novo.set(this.idsRosto); this.idsRosto = novo; }
+    const ant = paletaAtual(); usarPaleta('fria');
+    const { w, h } = DIM[tam];
+    ROSTOS.forEach((ro, ri) => { this.idsRosto[oi * ROSTOS.length + ri] = this.atlas.assar(`r|${olho}|${tam}|${ro}`, w, h, w / 2, h - 1, (g) => desenharRosto(g, { tipo: 'androide', papel: '#888888', olho }, ro, tam)); });
+    usarPaleta(ant);
+    return oi;
+  }
+  private garantirDrone(cor: string): [number, number] {
+    const ja = this.idsDrone.get(cor);
+    if (ja) return ja;
+    const ant = paletaAtual(); usarPaleta('fria');
+    const ids = [0, 1].map((q) => this.atlas.assar(`drone|${cor}|${q}`, 14, 10, 0, 0, (g) => desenharDrone(g, cor, q))) as [number, number];
+    usarPaleta(ant);
+    this.idsDrone.set(cor, ids);
+    return ids;
+  }
+  private garantirMini(cor: string): [number, number] {
+    const ja = this.idsMini.get(cor);
+    if (ja) return ja;
+    const ant = paletaAtual(); usarPaleta('fria');
+    const ids = [0, 1].map((q) => this.atlas.assar(`mini|${cor}|${q}`, 12, 12, 0, 0, (g) => desenharMini(g, cor, q))) as [number, number];
+    usarPaleta(ant);
+    this.idsMini.set(cor, ids);
+    return ids;
+  }
+  private garantirBrilho(chave: string): number {
+    const ja = this.idBrilho.get(chave);
+    if (ja !== undefined) return ja;
+    const ant = paletaAtual(); usarPaleta(this.op.paleta);
+    const [cor, rs] = chave.split('|'); const r = Number(rs);
+    const id = this.atlas.assar(`brilho|${chave}`, r * 2, r * 2, r, r, (g) => desenharBrilho(g, cp(cor), r));
+    usarPaleta(ant);
+    this.idBrilho.set(chave, id);
+    return id;
   }
 
   private assarObjeto(o: CtxObjeto): void {
@@ -215,20 +295,21 @@ export class VistaCorte implements Vista {
 
   private montarFixos(): void {
     const nuc = this.salas.find((s) => s.z.tema === 'nucleo');
-    if (nuc) this.textoEntregas = { digitos: [0, 1, 2, 3].map(() => this.spr(this.idsDigito[0], this.efeitosC)), x: nuc.x + RW / 2 + 22, y: nuc.y + 10 };
+    // contador de entregas do Núcleo: números em dobro, sem a tinta da noite (ler de longe no celular)
+    if (nuc) this.textoEntregas = { digitos: [0, 1, 2, 3].map(() => { const d = this.spr(this.idsDigito[0], this.iconesEsperaC); d.scale.set(2); return d; }), x: nuc.x + RW / 2 + 18, y: nuc.y + 8 };
     // meia-luz fria e letreiro apagado das alas em espera
     for (const s of this.salas) {
       if (s.z.tipo !== 'ala') continue;
       const sombra = new Sprite(Texture.WHITE); sombra.blendMode = 'multiply'; sombra.tint = TINT_PISO_ESPERA; sombra.position.set(s.x, s.y); sombra.width = RW; sombra.height = RH; sombra.visible = false;
       this.esperaC.addChild(sombra);
       const id = this.idsLetreiroOff.get(s.z.id)!;
-      const letreiro = this.spr(id, this.esperaC); const fr = this.q(id); letreiro.position.set(s.x + 6 + fr.dx, s.y + 6 + fr.dy); letreiro.visible = false;
+      const letreiro = this.spr(id, this.esperaC); const fr = this.q(id); letreiro.position.set(s.x + 6 + fr.dx, s.y + LETREIRO_Y + fr.dy); letreiro.visible = false;
       // ícone fixo de stand-by logo depois do letreiro
       const icone = this.spr(this.idIconeEspera, this.iconesEsperaC); icone.position.set(letreiro.x + fr.w + 2, letreiro.y + Math.round((fr.h - 9) / 2)); icone.visible = false;
       // telas de site da parede (tema de agência): desligam com a ala em espera
       const telas: { s: Sprite; limiar: number }[] = [];
-      if (s.z.tema === 'agencia') for (let k = 0; k < 4; k++) {
-        const t = new Sprite(Texture.WHITE); t.tint = 0x070912; t.alpha = 0.92; t.visible = false;
+      for (const k of this.telasAgencia(s)) {
+        const t = new Sprite(Texture.WHITE); t.tint = TINT_TELA_APAGADA; t.alpha = 0.92; t.visible = false;
         const x = s.x + 72 + k * 34 + 2; t.position.set(x, s.y + 12); t.width = 24; t.height = 20;
         this.esperaC.addChild(t); telas.push({ s: t, limiar: this.limiarX(s.z.id, x) });
       }
@@ -247,7 +328,7 @@ export class VistaCorte implements Vista {
     for (const b of this.brilhosFixos) b.s.destroy();
     this.brilhosFixos = [];
     const add = (cor: string, r: number, x: number, y: number, int: number, zona: string | null, limiar: number, recarga?: Mundo['objetos'][number]) => {
-      const id = this.idBrilho.get(`${cor}|${r}`); if (id === undefined) return;
+      const id = this.garantirBrilho(`${cor}|${r}`);
       const s = this.spr(id, this.luzC); s.blendMode = 'add';
       const fr = this.q(id); s.position.set(Math.round(x) + fr.dx, Math.round(y) + fr.dy);
       this.brilhosFixos.push({ s, x, y, r, int, zona, limiar, recarga });
@@ -288,7 +369,7 @@ export class VistaCorte implements Vista {
     this.medidas.estaticoMs = performance.now() - t0;
     this.corNoite = noite ? numeroCor(cp('#4b5592')) : 0xffffff;
     for (const c of [this.fundo, this.pulsosC, this.efeitosC, this.apagoes]) c.tint = this.corNoite;
-    for (const se of this.salasEspera) { se.letreiro.tint = this.corNoite; for (const tl of se.telas) tl.s.tint = this.corNoite; }
+    for (const se of this.salasEspera) { se.letreiro.tint = this.corNoite; for (const tl of se.telas) tl.s.tint = mulCor(TINT_TELA_APAGADA, this.corNoite); }
     this.r.background.color = noite ? mulCor(0x05060f, this.corNoite) : 0x9fd3ef;
   }
 
@@ -317,12 +398,12 @@ export class VistaCorte implements Vista {
       for (let u = 0; u < jw; u += 34) ret(g, jx + u, jy, 2, jh, '#181b2c');
     }
     if (z.tema === 'estudio') for (let u = 70; u < RW - 4; u += 4) for (let v = 6; v < PAREDE - 6; v += 4) if (((u + v) / 4) % 2 < 1) ret(g, x + u, y + v, 4, 4, '#353042');
-    if (z.tema === 'agencia') for (const [k, cor] of [[0, '#f4f1ea'], [1, '#101418'], [2, '#eef7f1'], [3, '#fff8ef']] as const) { const sx = x + 72 + k * 34; ret(g, sx, y + 10, 28, 24, '#0f121f'); ret(g, sx + 2, y + 12, 24, 20, cor); ret(g, sx + 2, y + 12, 24, 3, ['#1d2b4f', '#b0122a', '#1f7a4d', '#5b2a86'][k]); ret(g, sx + 5, y + 20, 10, 6, ['#c98a5a', '#3a3f48', '#7cc49a', '#e2a3c7'][k]); }
-    // letreiro da sala
-    const { largura } = pixelsTexto(z.nome);
-    ret(g, x + 6, y + 6, largura + 8, 11, '#0c0e1f');
-    ret(g, x + 6, y + 6, largura + 8, 1, z.cor); ret(g, x + 6, y + 16, largura + 8, 1, z.cor);
-    textoPlano(g, z.nome, x + 10, y + 9, noite ? z.cor : tom(z.cor, -0.25));
+    for (const k of this.telasAgencia(s)) { const sx = x + 72 + k * 34; ret(g, sx, y + 10, 28, 24, '#0f121f'); ret(g, sx + 2, y + 12, 24, 20, ['#f4f1ea', '#101418', '#eef7f1', '#fff8ef'][k]); ret(g, sx + 2, y + 12, 24, 3, ['#1d2b4f', '#b0122a', '#1f7a4d', '#5b2a86'][k]); ret(g, sx + 5, y + 20, 10, 6, ['#c98a5a', '#3a3f48', '#7cc49a', '#e2a3c7'][k]); }
+    // letreiro da sala (em dobro no celular, para ler de longe)
+    const [lw, lh] = this.tamLetreiro(z.nome), e = this.escLetreiro(z.nome);
+    ret(g, x + 6, y + LETREIRO_Y, lw, lh, '#0c0e1f');
+    ret(g, x + 6, y + LETREIRO_Y, lw, 1, z.cor); ret(g, x + 6, y + LETREIRO_Y + lh - 1, lw, 1, z.cor);
+    textoPlano(g, z.nome, x + 10, y + LETREIRO_Y + 3 * e, noite ? z.cor : tom(z.cor, -0.25), e);
     // luz do teto
     ret(g, x + 4, y + 2, RW - 8, 1, noite ? '#9fb3ff' : '#c9d2ff');
     // piso
@@ -338,9 +419,17 @@ export class VistaCorte implements Vista {
 
   private sincronizar(): void {
     const m = this.m;
+    const ant = paletaAtual(); usarPaleta(this.op.paleta);
+    for (const [p, v] of this.pessoas) {
+      if (m.porId.get(p.id) === p) continue;
+      v.corpo.destroy(); v.rosto?.destroy(); v.icone.destroy(); v.cabine.destroy();
+      this.pessoas.delete(p);
+    }
+    const objetosNovos = m.objetos.length > this.objetos.length;
     for (let k = this.objetos.length; k < m.objetos.length; k++) {
       const o = m.objetos[k];
       const f = frenteDe(o.tipo);
+      this.assarObjeto(o);
       const z = o.zona ? m.zonaPorId.get(o.zona) : null;
       const [x, y] = z ? this.ladoNaZona(z, o.i + o.w / 2, o.j + o.d) : [-999, -999];
       const idBase = this.atlas.idDe(`f|${o.tipo}|${f.varianteBase?.(o) ?? ''}`);
@@ -355,28 +444,49 @@ export class VistaCorte implements Vista {
         const n = c.n(o); const ids = new Int32Array(n);
         for (let q = 0; q < n; q++) ids[q] = this.atlas.idDe(`${vk}|${q}`) ?? -1;
         const s = new Sprite(Texture.EMPTY); s.roundPixels = true; s.zIndex = base.zIndex + 1e-3 * (ci + 1); s.visible = false;
-        this.ordenada.addChild(s);
-        vis.camadas.push({ s, ids, quadro: c.quadro, emEspera: c.emEspera });
+        // o neon fica embaixo das pessoas (nenhuma placa cobre cabeça); a placa da cápsula é parte dela, em cima
+        (o.tipo === 'placaNeon' && c.nome === 'neon' ? this.placasPodC : this.ordenada).addChild(s);
+        vis.camadas.push({ nome: c.nome, s, ids, quadro: c.quadro, emEspera: c.emEspera });
       });
       this.objetos.push(vis);
+      if (o.tipo === 'pod' && z) for (let a = 0; a < o.w; a++) for (let b = 0; b < o.d; b++) this.podEm.set(`${o.i + a},${o.j + b}`, vis);
     }
     for (const p of m.pessoas) {
       if (this.pessoas.has(p)) continue;
       const ap = p.ap, androide = ap?.tipo === 'androide';
+      this.garantirAparencia(p.aparencia);
       const corpo = new Sprite(Texture.EMPTY); corpo.roundPixels = true;
       const rosto = androide ? new Sprite(Texture.EMPTY) : null;
       const icone = new Sprite(Texture.EMPTY);
       const cabine = new Sprite(this.q(this.idCabine).tex); cabine.visible = false; cabine.alpha = 0.8;
-      for (const s of [corpo, rosto, icone, cabine]) if (s) this.ordenada.addChild(s);
+      for (const s of [corpo, rosto, cabine]) if (s) this.ordenada.addChild(s);
+      this.iconesP.addChild(icone);
       this.pessoas.set(p, { corpo, rosto, icone, cabine, apIdx: this.apIndice.get(p.aparencia) ?? 0, olhoIdx: androide ? (this.olhoIndice.get((ap as { olho?: string }).olho ?? '#7ef3ff') ?? 0) : 0, androide, xAnt: NaN, esp: false });
     }
+    if (objetosNovos) this.frentesDasCapsulas();
     this.montarBrilhos();
+    usarPaleta(ant);
     this.versaoVista = m.versao;
   }
+
+  /**
+   * No corte, a profundidade inteira da sala cabe em poucos pixels: o que fica na frente de uma cápsula cobre
+   * quem senta nela. Cada cápsula guarda os objetos da mesma sala, mais na frente, que cobrem o vão dela.
+   */
+  private frentesDasCapsulas(): void {
+    for (const v of this.objetos) {
+      if (v.o.tipo !== 'pod' || !v.o.zona) continue;
+      const x0 = v.x - v.f.w / 2, x1 = v.x + v.f.w / 2, y0 = v.y - v.f.h, y1 = v.y;
+      v.frente = this.objetos.filter((u) => u !== v && u.o.zona === v.o.zona && u.y > v.y && u.base.visible && u.x - u.f.w / 2 < x1 && x0 < u.x + u.f.w / 2 && u.y - u.f.h < y1 && y0 < u.y);
+    }
+  }
+
+
 
   desenhar(cam: Camera, _dt: number): void {
     const m = this.m, t = m.tAnim, noite = !!this.noite, tam = this.op.tam;
     if (m.versao !== this.versaoVista) this.sincronizar();
+    this.atlas.publicar();
     const [x0, y0] = cam.origem();
     const vw = cam.vw, vh = cam.vh;
     this.mundoC.position.set(-x0, -y0);
@@ -394,7 +504,16 @@ export class VistaCorte implements Vista {
       for (const tl of se.telas) { tl.s.visible = e.nivel < tl.limiar; if (tl.s.visible) n++; }
     }
     const info: InfoAnim = { t, ativo: null, presente: false, usada: false, erro: m.global.erroAte > m.relogio.agora, faseRack: m.global.faseRack, noite };
+    // cápsula com gente sentada: o que fica na frente dela no corte fica translúcido (quem senta aparece inteiro)
+    this.translucidos.clear();
     for (const v of this.objetos) {
+      if (!v.frente?.length || !v.o.dono) continue;
+      const p = m.porId.get(v.o.dono);
+      if (p && p.visivel && this.podDe(p) === v) for (const u of v.frente) this.translucidos.add(u);
+    }
+    for (const v of this.objetos) {
+      const alpha = this.translucidos.has(v) ? 0.35 : 1;
+      if (v.alpha !== alpha) { v.alpha = alpha; v.base.alpha = alpha; for (const c of v.camadas) c.s.alpha = alpha; }
       const dentro = v.base.visible && v.y - y0 > -20 && v.y - v.f.h - y0 < vh + 20;
       if (dentro) n++;
       const apagado = v.o.zona !== null && m.nivelZona(v.o.zona) < v.limiar;
@@ -434,7 +553,9 @@ export class VistaCorte implements Vista {
       const fr = this.q(this.idsPessoa[((v.apIdx * POSES.length + INDICE_POSE[pose]) * 4 + q) * 2 + (costas ? 1 : 0)]);
       const ax = Math.round(fx), ay = Math.round(fy);
       this.colocar(v.corpo, fr, ax, ay, esp);
-      const z = ay + 0.5;
+      // na cápsula: entre o fundo dela e a bancada (camadas em +0,001), inteiro, como no isométrico
+      const pod = this.podDe(p);
+      const z = pod ? pod.base.zIndex + 5e-4 : ay + 0.5;
       v.corpo.zIndex = z; v.corpo.alpha = p.alpha; v.corpo.visible = true; n++;
       const dormente = p.naRecarga || (p.def.papel === 'figurante' && v.androide && m.emEspera(p.zona));
       const tint = dormente ? mulCor(TINT_RECARGA, this.corNoite) : this.corNoite;
@@ -454,12 +575,15 @@ export class VistaCorte implements Vista {
       }
       if (v.androide && !dormente && p.estado !== 'ocioso' && this.idIcone.has(p.estado)) {
         v.icone.texture = this.q(this.idIcone.get(p.estado)!).tex;
-        v.icone.position.set(ax - 4, ay - Hs - 10 + (pose === 'digitando' ? 4 : 0) + (this.movimentoReduzido ? 0 : Math.round(Math.sin(t * 3 + p.pi))));
-        v.icone.zIndex = z + 2e-4; v.icone.visible = true; n++;
+        // na cápsula, o ícone fica ao lado da cabeça, dentro dela (em cima fica a placa com o nome da sala)
+        if (pod) v.icone.position.set(ax + 9, ay - 34 + (this.movimentoReduzido ? 0 : Math.round(Math.sin(t * 3 + p.pi))));
+        else v.icone.position.set(ax - 4, ay - Hs - 10 + (pose === 'digitando' ? 4 : 0) + (this.movimentoReduzido ? 0 : Math.round(Math.sin(t * 3 + p.pi))));
+        v.icone.zIndex = ay; v.icone.alpha = p.alpha; v.icone.visible = true; n++;
       } else v.icone.visible = false;
       v.cabine.visible = noPoco;
       if (noPoco) { v.cabine.position.set(this.pocoX + 2, ay - Hs - 3); v.cabine.zIndex = z + 3e-4; n++; }
     }
+    n += this.atualizarObras(t);
     n += this.atualizarEfeitos(t, y0, vh);
     this.atualizarTexto();
     n += this.atualizarLuz(t, x0, y0, vw, vh, noite);
@@ -472,6 +596,8 @@ export class VistaCorte implements Vista {
     if (o.tipo === 'recarga') { info.presente = !!(o.dono && this.m.porId.get(o.dono)?.naRecarga); return; }
     if (o.dono) { const p = this.m.porId.get(o.dono); if (p && p.visivel && p.emCasa) { info.presente = true; if (!['ocioso', 'dormindo', 'semSinal', 'limite'].includes(p.estado)) info.ativo = p.estado; } }
     else if (o.tipo === 'mesaComando' || o.tipo === 'mesaNotebook') info.presente = !!this.m.pessoas.find((x) => x.def.papel === (o.tipo === 'mesaComando' ? 'dono' : 'fixo'))?.emCasa;
+    // com o servidor, a cápsula de uma sala acordada fica acesa (tela e placa), com ou sem gente dentro
+    if (o.tipo === 'pod' && this.m.servidor && typeof o.props.sala === 'string' && this.m.salaPorId.get(o.props.sala)?.dormindo === false) info.presente = true;
     if (o.tipo === 'esteira' || o.tipo === 'bike') info.usada = this.m.pessoas.some((p) => !p.andando && p.pose === 'correr' && Math.floor(p.pi) >= o.i && Math.floor(p.pi) < o.i + o.w && Math.floor(p.pj) >= o.j && Math.floor(p.pj) < o.j + o.d);
     if (o.tipo === 'camera') info.usada = this.m.global.onAir;
     if (o.zona && this.m.global.apagao.has(o.zona)) { info.ativo = null; info.presente = false; }
@@ -480,6 +606,17 @@ export class VistaCorte implements Vista {
   private colocar(s: Sprite, fr: Quadro, ax: number, ay: number, espelho: boolean): void {
     if (s.texture !== fr.tex) s.texture = fr.tex;
     if (espelho) { s.scale.x = -1; s.position.set(ax - fr.dx, ay + fr.dy); } else { s.scale.x = 1; s.position.set(ax + fr.dx, ay + fr.dy); }
+  }
+
+  /**
+   * Partícula no corte: em volta do ponto de origem dela (a pessoa, onde quer que o corte a desenhe, ou o
+   * ladrilho do chão), com o mesmo deslocamento do isométrico. Sem origem, a conversão aproximada de sempre.
+   */
+  private posParticula(p: Mundo['particulas'][number]): [number, number] {
+    const b = p.base;
+    if (!b) return this.doIso(p.x, p.y, 30);
+    const [bx, by] = b.pessoa && b.pessoa.visivel ? this.posPessoa(b.pessoa) : this.lado(...this.m.geo.ladrilho(b.x, b.y));
+    return [bx + (p.x - b.x), by + (p.y - b.y)];
   }
 
   /** Converte um ponto do mundo isométrico (efeitos da simulação) para o corte. */
@@ -512,7 +649,7 @@ export class VistaCorte implements Vista {
       const [x, y] = this.doIso(d.x, d.y, 0);
       const yy = y - 26 - (d.z - 30) * 0.5;
       const v = this.pool.drones[k] ?? (this.pool.drones[k] = [this.spr(this.idPonto, this.efeitosC), this.spr(this.idPonto, this.efeitosC)]);
-      const ids = this.idsDrone.get(d.cor) ?? this.idsDrone.get('#ffb347')!;
+      const ids = this.garantirDrone(d.cor);
       v[0].texture = this.q(ids[Math.floor(t * 16) % 2]).tex; v[0].position.set(Math.round(x - 7), Math.round(yy - 6)); v[0].visible = true;
       const idc = this.idCarga.get(d.carga);
       if (idc !== undefined) { const fr = this.q(idc); v[1].texture = fr.tex; v[1].position.set(Math.round(x) + fr.dx, Math.round(yy + 6)); v[1].visible = true; } else v[1].visible = false;
@@ -523,9 +660,13 @@ export class VistaCorte implements Vista {
     // minidrones
     k = 0;
     for (const mi of m.minis) {
-      const [x, y] = this.doIso(mi.x, mi.y, 30);
+      // ao lado do pai, na sala dele (a posição do isométrico convertida caía no poço do elevador)
+      const pai = mi.pai.visivel ? this.posPessoa(mi.pai) : null;
+      const fora = pai && this.podDe(mi.pai) ? 16 : 0;
+      const [x, y] = pai ? [pai[0] + 6 + fora + (mi.idx ?? 0) * 12, pai[1] - DIM[this.op.tam].h + 22] : this.doIso(mi.x, mi.y, 30);
       const v = this.pool.minis[k] ?? (this.pool.minis[k] = [this.spr(this.idPonto, this.efeitosC), this.spr(this.idIcone.get('lendo')!, this.efeitosC)]);
-      const ids = this.idsMini.get(mi.cor) ?? this.idsMini.values().next().value!;
+      const ids = this.garantirMini(mi.cor);
+      v[1].texture = this.q(this.idIcone.get(mi.estado && this.idIcone.has(mi.estado) ? mi.estado : 'lendo')!).tex;
       v[0].texture = this.q(ids[Math.floor(t * 12) % 2]).tex; v[0].position.set(Math.round(x + 8), Math.round(y - 10 + (this.movimentoReduzido ? 0 : Math.sin(t * 4) * 2)));
       v[1].position.set(Math.round(x + 9), Math.round(y - 22)); v[0].visible = v[1].visible = true; k++;
     }
@@ -535,9 +676,9 @@ export class VistaCorte implements Vista {
     k = 0;
     for (const p of m.particulas) {
       if (k >= this.op.preset.maxParticulas) break;
-      const [x, y] = this.doIso(p.x, p.y, 30);
+      const [x, y] = this.posParticula(p);
       if (y - y0 < -10 || y - y0 > vh + 10) continue;
-      const s = this.pool.particulas[k] ?? (this.pool.particulas[k] = this.spr(this.idPonto, this.efeitosC));
+      const s = this.pool.particulas[k] ?? (this.pool.particulas[k] = this.spr(this.idPonto, this.particulasC));
       s.alpha = Math.min(1, Math.max(0, p.vida / p.max) * 1.5); s.tint = numeroCor(p.cor); s.scale.set(p.tipo === 'px' ? p.tam : 2);
       s.position.set(Math.round(x), Math.round(y)); s.visible = true; k++;
     }
@@ -554,10 +695,46 @@ export class VistaCorte implements Vista {
     return n;
   }
 
+  private atualizarObras(t: number): number {
+    const m = this.m;
+    if (!m.obras.length && !this.obraPool.length) return 0;
+    if (!this.idsObra.length) {
+      const ant = paletaAtual(); usarPaleta(this.op.paleta);
+      for (let k = 0; k < 8; k++) {
+        const h = Math.round(6 + (k / 7) * 34);
+        this.idsObra.push(this.atlas.assar(`obraCorte|${k}`, 34, 42, 17, 41, (g) => { for (const x of [1, 16, 32]) ret(g, x, 41 - h, 1, h + 1, '#f2c230'); for (let y = 41; y > 41 - h; y -= 8) ret(g, 1, y, 32, 1, '#f2c230'); }));
+      }
+      this.idBarraF = this.atlas.assar('barraF', 40, 4, 0, 0, (g) => ret(g, 0, 0, 40, 4, '#14162b'));
+      this.idBarraC = this.atlas.assar('barraC', 1, 2, 0, 0, (g) => ret(g, 0, 0, 1, 2, '#ffcf4d'));
+      usarPaleta(ant);
+    }
+    const idsD = this.garantirDrone('#f2c230');
+    let n = 0;
+    for (const ob of m.obras) {
+      const z = m.zonaPorId.get(ob.zona);
+      if (!z) continue;
+      const o = this.obraPool[n] ?? (this.obraPool[n] = { andaime: this.spr(this.idsObra[0], this.efeitosC), drones: [0, 1, 2].map(() => this.spr(idsD[0], this.efeitosC)), fundo: this.spr(this.idBarraF, this.efeitosC), cheia: this.spr(this.idBarraC, this.efeitosC) });
+      n++;
+      const prog = Math.max(0, Math.min(1, (m.relogio.agora - ob.inicio) / Math.max(0.1, ob.dur)));
+      const [x, y] = this.ladoNaZona(z, ob.i + 1, ob.j + 2);
+      const fr = this.q(this.idsObra[Math.min(7, Math.floor(prog * 7))]);
+      o.andaime.texture = fr.tex; o.andaime.position.set(Math.round(x) + fr.dx, Math.round(y) + fr.dy);
+      for (let k = 0; k < 3; k++) {
+        const a = t * 1.5 + (k * Math.PI * 2) / 3;
+        o.drones[k].texture = this.q(idsD[Math.floor(t * 16) % 2]).tex;
+        o.drones[k].position.set(Math.round(x + Math.cos(a) * 20 - 7), Math.round(y - 48 + Math.sin(a) * 5));
+      }
+      o.fundo.position.set(Math.round(x - 20), Math.round(y - 58)); o.cheia.position.set(Math.round(x - 19), Math.round(y - 57)); o.cheia.width = Math.max(1, Math.round(38 * prog));
+      for (const s2 of [o.andaime, ...o.drones, o.fundo, o.cheia]) s2.visible = true;
+    }
+    for (let k = n; k < this.obraPool.length; k++) { const o = this.obraPool[k]; for (const s2 of [o.andaime, ...o.drones, o.fundo, o.cheia]) s2.visible = false; }
+    return n * 6;
+  }
+
   private atualizarTexto(): void {
     const te = this.textoEntregas; if (!te) return;
     const txt = String(this.m.global.entregas).slice(-4);
-    te.digitos.forEach((s, k) => { if (k >= txt.length) { s.visible = false; return; } s.texture = this.q(this.idsDigito[Number(txt[k])]).tex; s.position.set(te.x + k * 4, te.y); s.visible = true; });
+    te.digitos.forEach((s, k) => { if (k >= txt.length) { s.visible = false; return; } s.texture = this.q(this.idsDigito[Number(txt[k])]).tex; s.position.set(te.x + k * 8, te.y); s.visible = true; });
   }
 
   private atualizarLuz(t: number, _x0: number, y0: number, _vw: number, vh: number, noite: boolean): number {
@@ -581,7 +758,7 @@ export class VistaCorte implements Vista {
     for (let k = 0; k < vis.length && k < max; k++) { vis[k].s.visible = true; n++; }
     let k = 0;
     const usar = (chave: string, x: number, y: number, alpha: number) => {
-      const id = this.idBrilho.get(chave); if (id === undefined) return;
+      const id = this.garantirBrilho(chave);
       const s = this.pool.brilhos[k] ?? (this.pool.brilhos[k] = (() => { const sp = this.spr(id, this.luzC); sp.blendMode = 'add'; return sp; })());
       const fr = this.q(id); s.texture = fr.tex; s.position.set(Math.round(x) + fr.dx, Math.round(y) + fr.dy); s.alpha = alpha; s.visible = true; k++;
     };
@@ -593,6 +770,9 @@ export class VistaCorte implements Vista {
   pontoBalao(p: Pessoa): [number, number] | null {
     if (!p.visivel) return null;
     const [x, y] = this.posPessoa(p);
+    // sentado numa cápsula: o balão fica acima dela e da placa com o nome da sala
+    const pod = this.podDe(p);
+    if (pod) return [x, pod.y - pod.f.h - 2];
     return [x, y - DIM[this.op.tam].h - 12];
   }
 

@@ -5,10 +5,16 @@ import { fileURLToPath } from 'node:url';
 
 // Desenvolvimento só no PC: 4780 e 47800 ficam para o servidor do Arcadia.
 // Duas páginas: o mundo (/) e os protótipos da Fase 1 (/prototipos).
+// /api (snapshot e SSE) vai para um servidor do Arcadia no próprio PC: o de teste (4790) por
+// padrão; ARCADIA_API troca o alvo (por exemplo http://127.0.0.1:4780, só para ler). Só loopback.
 
 const AQUI = path.dirname(fileURLToPath(import.meta.url));
 const RAIZ = path.resolve(AQUI, '..', '..');
 const LOCAL = path.join(RAIZ, 'docs', 'local');
+
+const API = process.env.ARCADIA_API ?? 'http://127.0.0.1:4790';
+if (!/^http:\/\/(127\.0\.0\.1|localhost|\[::1\]):\d{2,5}$/.test(API)) throw new Error(`ARCADIA_API precisa ser um endereço do próprio PC (http://127.0.0.1:<porta>), não ${API}`);
+const PROXY = { '/api': { target: API, changeOrigin: true } };
 
 const LOOPBACK = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1']);
 const TIPOS: Record<string, string> = { '.json': 'application/json; charset=utf-8', '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.png': 'image/png', '.css': 'text/css; charset=utf-8' };
@@ -55,8 +61,8 @@ function arquivosLocais(): Plugin {
 export default defineConfig({
   appType: 'mpa',
   plugins: [arquivosLocais()],
-  server: { host: '127.0.0.1', port: 4781, strictPort: true },
-  preview: { host: '127.0.0.1', port: 4782, strictPort: true },
+  server: { host: '127.0.0.1', port: 4781, strictPort: true, proxy: PROXY },
+  preview: { host: '127.0.0.1', port: 4782, strictPort: true, proxy: PROXY },
   build: {
     target: 'es2022',
     chunkSizeWarningLimit: 1200,

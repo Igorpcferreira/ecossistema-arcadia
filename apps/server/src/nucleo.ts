@@ -137,7 +137,7 @@ export type OpcoesNucleo = {
 function alasDaConfig(config: Config): { alas: AlaConfig[]; recepcao: AlaConfig } {
   const nome = (n: string, id: string) => sanearTexto(n, LIMITES.sala) || id;
   return {
-    alas: config.alas.map((a) => ({ id: a.id, nome: nome(a.nome, a.id), cor: a.cor })),
+    alas: config.alas.map((a) => ({ id: a.id, nome: nome(a.nome, a.id), cor: a.cor, ...(a.tema !== undefined ? { tema: a.tema } : {}) })),
     recepcao: { id: config.recepcao.id, nome: nome(config.recepcao.nome, config.recepcao.id), cor: config.recepcao.cor },
   };
 }

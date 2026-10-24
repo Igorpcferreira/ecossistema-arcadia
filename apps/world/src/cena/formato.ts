@@ -24,7 +24,7 @@ export type EstiloPiso =
 /** Tema de uma zona: decide a mobília, os postos de trabalho e os pontos de interesse. */
 export type Tema =
   | 'servidores' | 'equipe' | 'agencia' | 'estudio' | 'corporativo' | 'nucleo' | 'academia'
-  | 'lounge' | 'recepcao' | 'produtos' | 'cockpit' | 'laboratorio' | 'pessoal' | 'bastidores';
+  | 'lounge' | 'recepcao' | 'produtos' | 'cockpit' | 'laboratorio' | 'pessoal' | 'bastidores' | 'livre';
 
 /* ---------- Aparências ---------- */
 export type Acessorio = 'headset' | 'boina' | 'fone' | 'lupa' | 'monoculo' | 'gravata' | 'gravatinha' | 'brilho' | 'capacete' | 'chave' | 'nenhum';
@@ -39,6 +39,8 @@ export interface AparenciaAndroide {
   acessorio?: Acessorio;
   /** Nome de um conjunto feito à mão (arte/maoFeita.ts) para o passe à mão. */
   maoFeita?: string;
+  /** Corpo do mascote no OpenMausBot (cursor, circle, shield...): vira o emblema do peito. */
+  corpo?: string;
 }
 
 export interface MapaMao {
@@ -208,6 +210,13 @@ export interface Linha { zona: string; pontos: [number, number][] }
 export interface Tapete { i0: number; j0: number; i1: number; j1: number; cor: string; borda?: string; listras?: string }
 export interface Spot { t: [number, number]; pose: Pose; txt: string; z?: number; costas?: boolean }
 
+/**
+ * Lugar de trabalho numa zona, para quem chega depois da carga (os agentes do servidor): a mesa
+ * do tema (com o índice do objeto, que acende o holograma), a cápsula de uma sala (pod) ou um
+ * lugar em pé. `ocupadoPor` é quem a planta já pôs ali.
+ */
+export interface PostoCena { casa: [number, number]; pose: Pose; tipo: 'mesa' | 'pod' | 'pe'; mesa?: number; papel?: 'coordenador'; ocupadoPor?: string }
+
 export interface CenaDados {
   versao: 1;
   nome: string;
@@ -237,6 +246,12 @@ export interface CenaDados {
   roteiro: string[];
   ocio: Ocio;
   agenda: EventoAgenda[];
+  /** Postos de trabalho de cada zona (mesas do tema e lugares em pé). */
+  postos: Record<string, PostoCena[]>;
+  /** Terrenos de 2 por 2 de cada zona onde cabe a cápsula de uma sala, na ordem em que são usados. */
+  vagasPod: Record<string, [number, number][]>;
+  /** Lugares livres de cada zona para a cápsula de recarga de um bot que chega depois. */
+  vagasRecarga: Record<string, [number, number][]>;
 }
 
 export interface TextosSim {

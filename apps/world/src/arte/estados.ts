@@ -38,5 +38,16 @@ export function indiceHolo(e: Estado | null): number {
   return ESTADOS_HOLO.indexOf(e);
 }
 
+/**
+ * Holograma da cápsula de sala (seção 4.3): texto quando lê, código quando edita, terminal verde quando
+ * roda comando. Três quadros por modo; -1 (desligado) nos outros estados.
+ */
+export const MODOS_HOLO_CAPSULA = ['texto', 'codigo', 'terminal'] as const;
+export type ModoHoloCapsula = (typeof MODOS_HOLO_CAPSULA)[number];
+export function quadroHoloCapsula(e: Estado | null, t: number): number {
+  const m = e === 'lendo' ? 0 : e === 'editando' ? 1 : e === 'comando' ? 2 : -1;
+  return m < 0 ? -1 : m * 3 + (Math.floor(t * 3) % 3);
+}
+
 /** Prioridade do balão: quem espera você e erros primeiro. */
 export const PRIORIDADE: Partial<Record<Estado, number>> = { esperando: 5, erro: 4, talvez: 3, entregou: 3, limite: 3, delegando: 2, chegando: 2 };

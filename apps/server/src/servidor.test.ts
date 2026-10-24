@@ -3,7 +3,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import net from 'node:net';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
+import { spawnSync } from 'node:child_process';
+import { DatabaseSync } from 'node:sqlite';
 import { gunzipSync } from 'node:zlib';
 import { EsquemaQuadro, EsquemaSnapshot, MASCARA, type ArcadiaEvent, type Snapshot } from '@arcadia/shared';
 import { criarGuardaDoProcesso, iniciarServidor, type GuardaDoProcesso, type Servidor } from './servidor.ts';
@@ -12,6 +16,8 @@ import { relogioFalso } from './util/relogio.ts';
 import { validarConfig } from './config/carregar.ts';
 import type { Config } from './config/esquema.ts';
 import { abrirBanco } from './db/banco.ts';
+import { ErroTrava } from './db/trava.ts';
+import { ErroPorta } from './http/servir.ts';
 import { reconstruirEstado } from './nucleo.ts';
 import { aplicar } from './mundo/motor.ts';
 import type { AmbienteCaminhos } from './util/caminhos.ts';
@@ -201,19 +207,22 @@ async function visualizacaoAvulsa(opcoes: { limiteSse?: number; limiteSsePorIp?:
 async function sseDe(app: { fetch: (r: Request, env: unknown) => Response | Promise<Response> }, ip: string) {
   const res = await app.fetch(new Request('http://127.0.0.1/api/events', { headers: { host: '127.0.0.1:4780', accept: 'text/event-stream' } }), { incoming: { socket: { remoteAddress: ip } } });
   let encerrado = false;
+  let texto = '';
+  const decodificador = new TextDecoder();
   const leitor = res.body?.getReader();
   void (async () => {
     try {
       for (;;) {
         const r = await leitor?.read();
         if (!r || r.done) break;
+        texto += decodificador.decode(r.value, { stream: true });
       }
     } catch {
       // cancelado pelo teste
     }
     encerrado = true;
   })();
-  return { status: res.status, encerrado: () => encerrado, fechar: () => void leitor?.cancel().catch(() => {}) };
+  return { status: res.status, encerrado: () => encerrado, texto: () => texto, fechar: () => void leitor?.cancel().catch(() => {}) };
 }
 
 test('SSE: 32 conexões do próprio PC deixam só as 4 mais novas, e o celular ainda conecta', { timeout: 30_000 }, async () => {
@@ -226,6 +235,12 @@ test('SSE: 32 conexões do próprio PC deixam só as 4 mais novas, e o celular a
     assert.ok(await esperarQue(() => v.nucleo.transmissor.conexoes() === 4), `conexões contadas: ${v.nucleo.transmissor.conexoes()}`);
     assert.ok(await esperarQue(() => abertas.slice(0, 28).every((c) => c.encerrada())), 'as 28 mais antigas foram encerradas pelo servidor');
     assert.ok(abertas.slice(28).every((c) => !c.encerrada()), 'as 4 mais novas seguem abertas');
+    // Cada derrubada levou o adeus com o motivo como última mensagem: o cliente não reconecta sozinho (nada de rodízio).
+    for (const [i, c] of abertas.entries()) {
+      const msgs = lerSse(c.texto());
+      if (i < 28) assert.deepEqual([msgs.at(-1)?.event, msgs.at(-1)?.data], ['adeus', '{"motivo":"outra-aba"}'], `conexão ${i}`);
+      else assert.ok(!msgs.some((m) => m.event === 'adeus'), `conexão ${i} segue sem adeus`);
+    }
     celular = await sseDe(v.vis.app, '192.168.0.50');
     assert.equal(celular.status, 200, 'o celular conecta');
     assert.equal(v.nucleo.transmissor.conexoes(), 5);
@@ -247,6 +262,9 @@ test('SSE no teto total: a nova entra e cai a mais antiga do endereço com mais 
     assert.equal(nova.status, 200);
     assert.ok(await esperarQue(() => abertas[0]?.encerrado() === true), 'caiu a mais antiga do 10.0.0.1 (o endereço com mais conexões)');
     assert.ok(abertas.slice(1).every((c) => !c.encerrado()), 'as outras seguem abertas');
+    const ultima = lerSse(abertas[0]?.texto() ?? '').at(-1);
+    assert.deepEqual([ultima?.event, ultima?.data], ['adeus', '{"motivo":"muitas-conexoes"}'], 'a derrubada pelo teto total leva o motivo dela');
+    assert.ok(abertas.slice(1).every((c) => !c.texto().includes('event: adeus')));
     assert.equal(v.nucleo.transmissor.conexoes(), 6);
   } finally {
     for (const c of abertas) c.fechar();
@@ -467,4 +485,203 @@ test('simulador ligado no servidor: agentes aparecem e a fonte é marcada como s
     },
     { simulador: { cenario: 'visitante', semente: 1, velocidade: 60 } },
   );
+});
+
+/** Nome, tamanho e conteúdo (hash) de cada arquivo da pasta: o retrato muda se alguém tocar em qualquer dado. */
+function retrato(pasta: string): Record<string, string> {
+  const r: Record<string, string> = {};
+  for (const nome of fs.readdirSync(pasta).sort()) {
+    const conteudo = fs.readFileSync(path.join(pasta, nome));
+    r[nome] = `${conteudo.length}:${createHash('sha256').update(conteudo).digest('hex')}`;
+  }
+  return r;
+}
+
+function escutar(porta = 0): Promise<net.Server> {
+  return new Promise((ok, falha) => {
+    const s = net.createServer();
+    s.once('error', falha);
+    s.listen(porta, '127.0.0.1', () => ok(s));
+  });
+}
+
+const fecharServidorNet = (s: net.Server) => new Promise<void>((ok) => s.close(() => ok()));
+
+test('porta ocupada: a partida falha sem tocar em dado nenhum (nem pasta, nem trava, nem banco) e devolve a outra porta', { timeout: 30_000 }, async () => {
+  const pasta = pastaTemporaria();
+  const ocupante = await escutar();
+  const ocupada = (ocupante.address() as net.AddressInfo).port;
+  try {
+    const amb = ambienteFalso(path.join(pasta.caminho, 'casa'));
+    const config = configDeTeste(path.join(pasta.caminho, 'projetos'), amb);
+    const carregada = { config, arquivo: 'teste.yaml', descricao: 'configuração de teste', origem: 'argumento' as const, avisos: [] };
+    // Pasta de dados com o banco de um servidor anterior: nada nela pode mudar.
+    const dados = path.join(pasta.caminho, 'dados');
+    fs.mkdirSync(dados);
+    const anterior = abrirBanco(path.join(dados, 'arcadia.sqlite'));
+    anterior.fechar();
+    const antes = retrato(dados);
+    assert.ok(Object.keys(antes).includes('arcadia.sqlite'));
+    // Uma porta livre para a ingestão: depois da falha na visualização, ela tem que estar livre de novo.
+    const livre = await escutar();
+    const portaLivre = (livre.address() as net.AddressInfo).port;
+    await fecharServidorNet(livre);
+    for (const portas of [{ ingestao: ocupada, visualizacao: 0 }, { ingestao: portaLivre, visualizacao: ocupada }]) {
+      await assert.rejects(
+        iniciarServidor({ carregada, amb, log: criarLog({ silencioso: true }), dirDados: dados, portas, semSondarOmb: true, buildId: 'teste-porta' }),
+        (e: unknown) => e instanceof ErroPorta && e.message.includes(`A porta ${ocupada}`),
+      );
+      assert.deepEqual(retrato(dados), antes, 'a pasta de dados ficou como estava');
+    }
+    await fecharServidorNet(await escutar(portaLivre));
+    // Pasta que ainda não existia continua sem existir.
+    const nova = path.join(pasta.caminho, 'dados-novos');
+    await assert.rejects(
+      iniciarServidor({ carregada, amb, log: criarLog({ silencioso: true }), dirDados: nova, portas: { ingestao: 0, visualizacao: ocupada }, semSondarOmb: true, buildId: 'teste-porta' }),
+      ErroPorta,
+    );
+    assert.ok(!fs.existsSync(nova), 'a pasta nem foi criada');
+  } finally {
+    await fecharServidorNet(ocupante);
+    pasta.remover();
+  }
+});
+
+test('dois servidores na mesma pasta de dados: o segundo é recusado antes do banco e diz qual processo segura a pasta', { timeout: 30_000 }, async () => {
+  await comServidor(async (s, ctx) => {
+    s.nucleo.ingerir({ evento: evento('sessao.inicio'), caminhos: { cwd: path.join(ctx.projetos, 'produto-alfa') } });
+    await s.nucleo.ocioso();
+    const amb = ambienteFalso(path.join(ctx.pasta.caminho, 'casa'));
+    // O segundo traz outra ala: se abrisse o banco, a ala dele entraria no andar do primeiro.
+    const outra = configDeTeste(ctx.projetos, amb, { alas: [{ id: 'intrusa', nome: 'Intrusa', cor: '#123456', regras: [] }] });
+    const linhas: string[] = [];
+    let recusa: unknown;
+    try {
+      const segundo = await iniciarServidor({
+        carregada: { config: outra, arquivo: 'outra.yaml', descricao: 'outra configuração', origem: 'argumento', avisos: [] },
+        amb,
+        log: criarLog({ saida: (l) => linhas.push(l) }),
+        dirDados: ctx.pasta.caminho,
+        portas: { ingestao: 0, visualizacao: 0 },
+        semSondarOmb: true,
+        buildId: 'teste-2',
+      });
+      await segundo.parar();
+    } catch (e) {
+      recusa = e;
+    }
+    assert.ok(recusa instanceof ErroTrava, `o segundo servidor tinha que ser recusado (veio ${String(recusa)})`);
+    assert.ok(recusa.message.includes(`já está em uso por outro servidor do Arcadia (processo ${process.pid}, portas ${s.visualizacao.porta} e ${s.ingestao.porta}, desde `), recusa.message);
+    // O primeiro segue inteiro, e o banco não ganhou a ala do segundo.
+    const snap = await snapshot(s.visualizacao.porta);
+    assert.deepEqual(Object.keys(snap.estado.alas), ['recepcao', 'produtos']);
+    const banco = abrirBanco(s.arquivoBanco);
+    try {
+      assert.deepEqual(banco.alas().map((a) => a.id).sort(), ['produtos', 'recepcao'].sort(), 'o banco não ganhou a ala do segundo');
+    } finally {
+      banco.fechar();
+    }
+    assert.equal(JSON.parse(fs.readFileSync(path.join(ctx.pasta.caminho, 'arcadia.trava'), 'utf8')).pid, process.pid, 'a trava segue com o primeiro');
+  });
+});
+
+test('trava velha de um servidor que caiu é retomada com aviso no log; o desligamento solta a trava', { timeout: 30_000 }, async () => {
+  const pasta = pastaTemporaria();
+  try {
+    const morto = spawnSync(process.execPath, ['-e', '']).pid;
+    assert.ok(morto);
+    const arquivo = path.join(pasta.caminho, 'arcadia.trava');
+    fs.writeFileSync(arquivo, JSON.stringify({ pid: morto, desde: Date.now() - 120_000, portas: { ingestao: 47800, visualizacao: 4780 } }));
+    await comServidor(
+      async (s, ctx) => {
+        const aviso = ctx.linhas.find((l) => l.includes('a pasta de dados tinha a trava de um servidor que não está mais rodando'));
+        assert.ok(aviso, ctx.linhas.join('\n'));
+        assert.ok(aviso.includes(`aviso: a pasta de dados tinha a trava de um servidor que não está mais rodando (processo ${morto}, portas 4780 e 47800, desde `), aviso);
+        assert.match(aviso, /desde \d{2}\/\d{2}\/\d{4} \d{2}:\d{2}\); a trava foi retomada$/);
+        assert.equal(JSON.parse(fs.readFileSync(arquivo, 'utf8')).pid, process.pid);
+        assert.equal((await obter(s.ingestao.porta, '/saude')).status, 200);
+      },
+      { pasta, manterPasta: true },
+    );
+    assert.ok(!fs.existsSync(arquivo), 'desligado, o servidor solta a trava');
+  } finally {
+    pasta.remover();
+  }
+});
+
+test('pacote local de ponta a ponta: o PC recebe o pacote, e o conteúdo nunca vai para o banco, o log, o snapshot ou o doctor', { timeout: 30_000 }, async () => {
+  const pasta = pastaTemporaria();
+  const pacote = path.join(pasta.caminho, 'pacote canario qy');
+  fs.mkdirSync(pacote, { recursive: true });
+  const conteudo = JSON.stringify({ versao: 1, personagens: [{ papel: 'humano', nome: 'Canario Pacote Qy', curto: 'CPQ', aparencia: 'androide', falas: ['fala canario qy'] }] });
+  fs.writeFileSync(path.join(pacote, 'personagens.json'), conteudo);
+  let arquivoBanco = '';
+  let linhas: string[] = [];
+  try {
+    await comServidor(
+      async (s, ctx) => {
+        arquivoBanco = s.arquivoBanco;
+        linhas = ctx.linhas;
+        s.nucleo.ingerir({ evento: evento('sessao.inicio'), caminhos: { cwd: path.join(ctx.projetos, 'produto-alfa') } });
+        const r = await obter(s.visualizacao.porta, '/local/personagens.json');
+        assert.equal(r.status, 200);
+        assert.equal(r.corpo.toString('utf8'), conteudo);
+        await s.nucleo.ocioso();
+        const saidas = [
+          (await obter(s.visualizacao.porta, '/api/snapshot')).corpo.toString('utf8'),
+          (await obter(s.ingestao.porta, '/doctor?formato=texto')).corpo.toString('utf8'),
+          (await obter(s.ingestao.porta, '/doctor')).corpo.toString('utf8'),
+          (await obter(s.ingestao.porta, '/saude')).corpo.toString('utf8'),
+        ];
+        for (const texto of saidas) assert.ok(!/canario/i.test(texto), 'nem o conteúdo nem a pasta do pacote saem');
+      },
+      { pasta, manterPasta: true, extra: { personagens: { pacoteLocal: pacote.replace(/\\/g, '/') } } },
+    );
+    for (const sufixo of ['', '-wal', '-shm']) {
+      if (!fs.existsSync(arquivoBanco + sufixo)) continue;
+      const bytes = fs.readFileSync(arquivoBanco + sufixo).toString('latin1');
+      assert.ok(!/canario/i.test(bytes), `o banco (${sufixo || 'principal'}) não guarda nada do pacote`);
+    }
+    assert.ok(!linhas.some((l) => /canario/i.test(l)), `o log não fala do pacote:\n${linhas.join('\n')}`);
+  } finally {
+    pasta.remover();
+  }
+});
+
+test('tema da ala de ponta a ponta: vai ao snapshot, segue a configuração a cada partida e o banco não muda de esquema', { timeout: 30_000 }, async () => {
+  const pasta = pastaTemporaria();
+  const amb = ambienteFalso(path.join(pasta.caminho, 'casa'));
+  const comTema = (tema: string | undefined) => configDeTeste(path.join(pasta.caminho, 'projetos'), amb, {
+    alas: [{ id: 'produtos', nome: 'Produtos', cor: '#c9a7ff', regras: [], ...(tema ? { tema } : {}) }],
+  });
+  const rodar = async (tema: string | undefined) => {
+    const s = await iniciarServidor({
+      carregada: { config: comTema(tema), arquivo: 'teste.yaml', descricao: 'configuração de teste', origem: 'argumento', avisos: [] },
+      amb, log: criarLog({ silencioso: true }), dirDados: path.join(pasta.caminho, 'dados'), portas: { ingestao: 0, visualizacao: 0 }, semSondarOmb: true, buildId: 'teste-tema',
+    });
+    try {
+      const snap = await snapshot(s.visualizacao.porta);
+      return { produtos: snap.estado.alas['produtos'], recepcao: snap.estado.alas['recepcao'], arquivoBanco: s.arquivoBanco };
+    } finally {
+      await s.parar();
+    }
+  };
+  try {
+    const a = await rodar('laboratorio');
+    assert.equal(a.produtos?.tema, 'laboratorio', 'o tema chega ao snapshot (e passou pela guarda da saída)');
+    assert.equal(a.recepcao?.tema, undefined);
+    const b = await rodar('equipe');
+    assert.equal(b.produtos?.tema, 'equipe', 'reiniciado com outro tema, vale o da configuração');
+    const c = await rodar(undefined);
+    assert.equal(c.produtos?.tema, undefined, 'sem tema na configuração, o snapshot gravado não traz o velho de volta');
+    const banco = new DatabaseSync(c.arquivoBanco, { readOnly: true });
+    try {
+      const colunas = (banco.prepare('PRAGMA table_info(alas)').all() as { name: string }[]).map((x) => x.name);
+      assert.ok(!colunas.includes('tema'), `o banco não ganhou coluna: ${colunas.join(', ')}`);
+    } finally {
+      banco.close();
+    }
+  } finally {
+    pasta.remover();
+  }
 });

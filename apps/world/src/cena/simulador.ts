@@ -19,7 +19,6 @@ type Roteiro = Generator<Espera, void, unknown>;
 export class Simulador {
   readonly m: Mundo;
   private agenda: { g: Roteiro; e: Espera }[] = [];
-  private vagas = new Set<string>();
   private t = { espera: 1.2, dono: 9, fixo: 14, visita: 22, treinoDono: 40, vida: 1, turno: 0 };
   /** Até quando cada ala tem trabalho (segundos de simulação). */
   private turnos = new Map<string, number>();
@@ -29,6 +28,11 @@ export class Simulador {
   /** Ócio curto (?ocio=rapido): o ciclo inteiro de espera cabe em um ou dois minutos. */
   private readonly rapido: boolean;
   ligado = true;
+  /**
+   * Só a vida ambiente: o dono treina, a pessoa fixa toma café e os figurantes passeiam. Os
+   * agentes, nesse modo, são do coreógrafo (dados do servidor), e nada daqui vai para a faixa de eventos.
+   */
+  soAmbiente = false;
 
   constructor(m: Mundo) {
     this.m = m;
@@ -117,6 +121,11 @@ export class Simulador {
   private dirigir(dt: number): void {
     const t = this.t;
     t.espera -= dt; t.dono -= dt; t.fixo -= dt; t.visita -= dt; t.treinoDono -= dt; t.vida -= dt;
+    if (this.soAmbiente) {
+      if (t.treinoDono <= 0) { t.treinoDono = this.entre(60, 90); this.iniciar(this.donoTreina()); }
+      if (t.fixo <= 0) { t.fixo = this.entre(16, 26); this.iniciar(this.fixoRotina()); }
+      return;
+    }
     if (t.vida <= 0) { t.vida = 1; this.cicloVida(); }
     if (t.dono <= 0) { t.dono = this.entre(14, 22); this.iniciar(this.pedidoDoDono()); }
     if (t.treinoDono <= 0) { t.treinoDono = this.entre(60, 90); this.iniciar(this.donoTreina()); }
@@ -187,7 +196,7 @@ export class Simulador {
   }
 
   private vagaLivre(spots: Spot[]): Spot | null {
-    const livres = spots.filter((s) => !this.vagas.has(s.t.join(',')));
+    const livres = spots.filter((s) => !this.m.vagas.has(s.t.join(',')));
     return livres.length ? this.escolha(livres) : null;
   }
 
@@ -201,14 +210,14 @@ export class Simulador {
 
   private *irE(a: Pessoa, op: Spot, estado: Estado, dur: number): Roteiro {
     const chave = op.t.join(',');
-    if (this.vagas.has(chave)) return;
-    this.vagas.add(chave); a.ocupado = true;
+    if (this.m.vagas.has(chave)) return;
+    this.m.vagas.add(chave); a.ocupado = true;
     a.definir(estado, op.txt);
-    this.m.anunciar(a, minusc(op.txt));
+    if (!this.soAmbiente) this.m.anunciar(a, minusc(op.txt));
     yield* this.andar(a, op.t);
     a.pose = op.pose; a.z = op.z ?? 0; a.costas = !!op.costas; a.espelho = false;
     yield this.esperar(dur);
-    a.z = 0; this.vagas.delete(chave);
+    a.z = 0; this.m.vagas.delete(chave);
     if (a.def.papel !== 'dono') a.definir('ocioso', undefined, false);
     yield* this.voltarParaCasa(a);
     a.ocupado = false;
@@ -334,7 +343,7 @@ export class Simulador {
     this.m.anunciar(a, this.m.cena.textos.erroTicker);
     this.m.global.erroAte = this.agora + 2;
     const fx = this.m.rngFx;
-    for (let k = 0; k < 10; k++) { const [x, y] = this.m.topo(a); this.m.particula(x - 3 + fx() * 6, y + 4, { cor: ['#5a5f70', '#7a7f90', '#ff6b5a'][Math.floor(fx() * 3)], vy: -14 + fx() * 8, vida: 0.8 + fx() * 0.6 }); }
+    for (let k = 0; k < 10; k++) { const [x, y] = this.m.topo(a); this.m.particulaDe(a, x - 3 + fx() * 6, y + 4, { cor: ['#5a5f70', '#7a7f90', '#ff6b5a'][Math.floor(fx() * 3)], vy: -14 + fx() * 8, vida: 0.8 + fx() * 0.6 }); }
     this.m.emitirPulso(a.zona, '#ff6b5a', 1);
     yield this.esperar(3.5);
     a.definir('pensando', 'Investigando a falha', false);
@@ -346,7 +355,7 @@ export class Simulador {
     a.definir('entregou', this.m.cena.textos.entrega);
     this.m.anunciar(a, minusc(this.m.cena.textos.entrega));
     const fx = this.m.rngFx;
-    for (let k = 0; k < 14; k++) { const [x, y] = this.m.topo(a); this.m.particula(x, y, { cor: ['#7dffa8', '#ffcf4d', '#ff4fd8', '#3ee0ff'][Math.floor(fx() * 4)], vx: -20 + fx() * 40, vy: -30 + fx() * 20, g: 40, vida: 0.7 + fx() * 0.5 }); }
+    for (let k = 0; k < 14; k++) { const [x, y] = this.m.topo(a); this.m.particulaDe(a, x, y, { cor: ['#7dffa8', '#ffcf4d', '#ff4fd8', '#3ee0ff'][Math.floor(fx() * 4)], vx: -20 + fx() * 40, vy: -30 + fx() * 20, g: 40, vida: 0.7 + fx() * 0.5 }); }
     const [ni, nj] = this.m.cena.pontos.nucleo;
     const alvo = this.m.geo.iso(ni, nj, 50);
     yield* this.drone(() => this.m.topo(a), () => alvo, { cor: '#7dffa8', carga: 'cubo', dur: 2.6, alt: 30 });
@@ -413,7 +422,7 @@ export class Simulador {
     const fim = this.agora + this.entre(15, 25);
     while (this.agora < fim) {
       const [x, y] = this.m.topo(a, 34);
-      this.m.particula(x + 6, y, { tipo: 'z', cor: '#b9b0dc', vx: 4, vy: -8, vida: 1.6 });
+      this.m.particulaDe(a, x + 6, y, { tipo: 'z', cor: '#b9b0dc', vx: 4, vy: -8, vida: 1.6 });
       yield this.esperar(1.4);
     }
     a.pose = pose;
@@ -457,7 +466,7 @@ export class Simulador {
     if (fixo) {
       fixo.falar((fixo.def.falas?.volta ?? 'Oi, {dono}!').replace('{dono}', dono.curto), 2, 'fixo', 3);
       const fx = this.m.rngFx;
-      for (let k = 0; k < 6; k++) { const [x, y] = this.m.topo(fixo); this.m.particula(x - 4 + fx() * 8, y - 2, { cor: '#ff5f8f', vy: -16 + fx() * 8, vx: -3 + fx() * 6, vida: 1.2, tipo: 'coracao' }); }
+      for (let k = 0; k < 6; k++) { const [x, y] = this.m.topo(fixo); this.m.particulaDe(fixo, x - 4 + fx() * 8, y - 2, { cor: '#ff5f8f', vy: -16 + fx() * 8, vx: -3 + fx() * 6, vida: 1.2, tipo: 'coracao' }); }
     }
   }
 
@@ -530,13 +539,15 @@ export class Simulador {
   private feixe(ti: number, tj: number): void {
     const fx = this.m.rngFx;
     const [x, y] = this.m.geo.iso(ti, tj);
-    for (let k = 0; k < 20; k++) this.m.particula(x - 10 + fx() * 20, y, { cor: '#9ff3ff', vy: -40 + fx() * 20, vx: 0, vida: 0.5 + fx() * 0.5 });
+    for (let k = 0; k < 20; k++) this.m.particulaNoChao(ti, tj, x - 10 + fx() * 20, y, { cor: '#9ff3ff', vy: -40 + fx() * 20, vx: 0, vida: 0.5 + fx() * 0.5 });
   }
 
   private *construir(): Roteiro {
     const m = this.m, tr = m.cena.pontos.terreno;
     if (!tr || m.obra.fase !== 'vazio') return;
     m.obra.fase = 'obra'; m.obra.inicio = this.agora;
+    const obraRT = { chave: 'obra-simulada', i: tr.i, j: tr.j, zona: tr.zona, inicio: this.agora, dur: 7.5 };
+    m.obras.push(obraRT);
     // a obra é trabalho na ala: ela acorda
     m.atividade(tr.zona);
     this.turnos.set(tr.zona, this.agora + this.duracaoTurno());
@@ -548,7 +559,7 @@ export class Simulador {
     const fim = this.agora + 7.5;
     while (this.agora < fim) {
       const prog = Math.min(1, (this.agora - m.obra.inicio) / 7.5);
-      if (fx() < 0.5) { const p = m.geo.iso(tr.i + fx() * 2, tr.j + fx() * 2, 40 * prog); m.particula(p[0], p[1], { cor: ['#ffcf4d', '#ffffff', '#ff9a3c'][Math.floor(fx() * 3)], vx: -20 + fx() * 40, vy: -20 + fx() * 20, g: 60, vida: 0.5 }); }
+      if (fx() < 0.5) { const p = m.geo.iso(tr.i + fx() * 2, tr.j + fx() * 2, 40 * prog); m.particulaNoChao(tr.i + 1, tr.j + 2, p[0], p[1], { cor: ['#ffcf4d', '#ffffff', '#ff9a3c'][Math.floor(fx() * 3)], vx: -20 + fx() * 40, vy: -20 + fx() * 20, g: 60, vida: 0.5 }); }
       yield this.esperar(1 / 30);
     }
     const sala = `${tr.zona}-${tx.salaNome.toLowerCase()}`;
@@ -557,12 +568,13 @@ export class Simulador {
     m.adicionarObjeto('planta', tr.i + 2, tr.j + 2, {});
     m.montarLuzes();
     m.obra.fase = 'pronta';
-    for (let k = 0; k < 30; k++) { const [x, y] = m.geo.iso(tr.i + 1, tr.j + 1, 20); m.particula(x - 20 + fx() * 40, y - 10 + fx() * 20, { cor: ['#ffcf4d', '#c9a7ff', '#ffffff'][Math.floor(fx() * 3)], vx: -30 + fx() * 60, vy: -40 + fx() * 30, g: 50, vida: 0.8 + fx() * 0.6 }); }
+    m.obras = m.obras.filter((o) => o !== obraRT);
+    for (let k = 0; k < 30; k++) { const [x, y] = m.geo.iso(tr.i + 1, tr.j + 1, 20); m.particulaNoChao(tr.i + 1, tr.j + 2, x - 20 + fx() * 40, y - 10 + fx() * 20, { cor: ['#ffcf4d', '#c9a7ff', '#ffffff'][Math.floor(fx() * 3)], vx: -30 + fx() * 60, vy: -40 + fx() * 30, g: 50, vida: 0.8 + fx() * 0.6 }); }
     const ag = tx.agente;
     // o posto fica dentro da cápsula nova, atrás da bancada (como na prancha)
     const def: Personagem = {
       id: 'agenteSalaNova', nome: ag.nome, curto: ag.curto, cargo: ag.cargo, tipo: 'agente', papel: 'agente', aparencia: ag.aparencia,
-      zona: tr.zona, casa: [tr.i, tr.j], poseCasa: 'digitando', motor: 'claude', tarefas: ag.tarefas, tipoAgente: 'sessao',
+      zona: tr.zona, casa: [tr.i + 1, tr.j], poseCasa: 'digitando', motor: 'claude', tarefas: ag.tarefas, tipoAgente: 'sessao',
     };
     const [ti, tj] = m.cena.pontos.teletransporte;
     const novo = m.adicionarPessoa(def, 0);
